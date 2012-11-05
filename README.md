@@ -21,7 +21,7 @@ update_check('update_checker', '0.0.1')
 If you need more control, such as performing operations conditionally when
 there is an update you can use the following approach:
 
-```pyton
+```python
 from update_checker import UpdateChecker
 checker = UpdateChecker()
 result = checker.check('update_checker', '0.0.1')
