@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 from pkg_resources import parse_version as V
 
-__version__ = '0.1'
+__version__ = '0.2'
 
 
 class UpdateChecker(object):
@@ -38,12 +38,6 @@ class UpdateChecker(object):
         return UpdateResult(package_name, running=package_version,
                             available=data['data']['version'],
                             release_date=data['data']['upload_time'])
-
-    def output(self, *args, **kwargs):
-        """Behaves similar to check, but outputs the result, if any."""
-        result = self.check(*args, **kwargs)
-        if result:
-            print(result)
 
 
 class UpdateResult(object):
@@ -92,3 +86,11 @@ def pretty_date(the_datetime):
         return '1 hour ago'
     else:
         return '{0} hours ago'.format(diff.seconds / 3600)
+
+
+def update_check(package_name, package_version, url=None, **extra_data):
+    """Convenience method that outputs to stdout if an update is available."""
+    checker = UpdateChecker(url)
+    result = checker.check(package_name, package_version, **extra_data)
+    if result:
+        print(result)
