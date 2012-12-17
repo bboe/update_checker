@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 from pkg_resources import parse_version as V
 
-__version__ = '0.2'
+__version__ = '0.3'
 
 
 class UpdateChecker(object):
@@ -30,7 +30,7 @@ class UpdateChecker(object):
         except requests.exceptions.RequestException:
             return None
 
-        data = response.json
+        data = response.json()
         if not data or not data.get('success') or (V(package_version) >=
                                                    V(data['data']['version'])):
             return None

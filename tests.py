@@ -11,7 +11,7 @@ from update_checker import UpdateChecker, update_check
 class UpdateCheckerTest(unittest.TestCase):
     def test_bad_package(self):
         checker = UpdateChecker()
-        self.assertFalse(checker.check('update_checkers_slkdflj', '0.0.1'))
+        self.assertFalse(checker.check('update_checker_slkdflj', '0.0.1'))
 
     def test_bad_url(self):
         checker = UpdateChecker('http://sdlkjsldfkjsdlkfj.com')
