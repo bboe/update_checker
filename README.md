@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/bboe/update_checker.png)](https://travis-ci.org/bboe/update_checker)
+
 # update_checker
 
 A python module that will check for package updates.

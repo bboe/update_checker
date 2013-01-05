@@ -27,5 +27,6 @@ setup(name=MODULE_NAME,
       license='Simplified BSD License',
       long_description=README,
       py_modules=[MODULE_NAME],
+      test_suite='tests',
       url='https://github.com/bboe/update_checker',
       version=VERSION)
