@@ -3,10 +3,30 @@ import json
 import platform
 import requests
 import sys
+import time
 from datetime import datetime
+from functools import wraps
 from pkg_resources import parse_version as V
 
-__version__ = '0.3'
+__version__ = '0.4'
+
+
+def cache_results(function):
+    cache = {}
+    cache_expire_time = 3600
+
+    @wraps(function)
+    def wrapped(obj, package_name, package_version, **extra_data):
+        now = time.time()
+        key = (package_name, package_version)
+        if key in cache:
+            cache_time, retval = cache[key]
+            if now - cache_time < cache_expire_time:
+                return retval
+        retval = function(obj, package_name, package_version, **extra_data)
+        cache[key] = now, retval
+        return retval
+    return wrapped
 
 
 class UpdateChecker(object):
@@ -15,6 +35,7 @@ class UpdateChecker(object):
         """Store the URL to use for checking."""
         self.url = url if url else 'http://csil.cs.ucsb.edu:65429/check'
 
+    @cache_results
     def check(self, package_name, package_version, **extra_data):
         """Return a UpdateResult object if there is a newer version."""
         data = extra_data
@@ -27,10 +48,10 @@ class UpdateChecker(object):
             headers = {'content-type': 'application/json'}
             response = requests.put(self.url, json.dumps(data), timeout=1,
                                     headers=headers)
-        except requests.exceptions.RequestException:
+            data = response.json()
+        except (requests.exceptions.RequestException, ValueError):
             return None
 
-        data = response.json()
         if not data or not data.get('success') or (V(package_version) >=
                                                    V(data['data']['version'])):
             return None
