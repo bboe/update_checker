@@ -11,7 +11,7 @@ from functools import wraps
 from pkg_resources import parse_version as V
 from tempfile import gettempdir
 
-__version__ = '0.4'
+__version__ = '0.5'
 
 
 def cache_results(function):
@@ -56,6 +56,7 @@ def cache_results(function):
         save_to_permacache()
         return retval
     return wrapped
+
 
 # This class must be defined before UpdateChecker in order to unpickle objects
 # of this type
