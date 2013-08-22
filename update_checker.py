@@ -95,7 +95,8 @@ class UpdateChecker(object):
     """A class to check for package updates."""
     def __init__(self, url=None):
         """Store the URL to use for checking."""
-        self.url = url if url else 'http://csil.cs.ucsb.edu:65429/check'
+        self.url = url if url \
+            else 'http://update_checker.bryceboe.com:65429/check'
 
     @cache_results
     def check(self, package_name, package_version, **extra_data):
