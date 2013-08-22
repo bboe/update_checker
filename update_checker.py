@@ -11,7 +11,7 @@ from functools import wraps
 from pkg_resources import parse_version as V
 from tempfile import gettempdir
 
-__version__ = '0.5'
+__version__ = '0.6'
 
 
 def cache_results(function):
@@ -25,23 +25,29 @@ def cache_results(function):
 
         """
         update_from_permacache()
-        with open(filename, 'wb') as fp:
-            pickle.dump(cache, fp, pickle.HIGHEST_PROTOCOL)
+        try:
+            with open(filename, 'wb') as fp:
+                pickle.dump(cache, fp, pickle.HIGHEST_PROTOCOL)
+        except IOError:
+            pass  # Ignore permacache saving exceptions
 
     def update_from_permacache():
         """Attempt to update newer items from the permacache."""
         try:
             permacache = pickle.load(open(filename, 'rb'))
         except Exception:
-            return
+            return  # It's okay if it cannot load
         for key, value in permacache.items():
             if key not in cache or value[0] > cache[key][0]:
                 cache[key] = value
 
     cache = {}
     cache_expire_time = 3600
-    filename = os.path.join(gettempdir(), 'update_checker_cache.pkl')
-    update_from_permacache()
+    try:
+        filename = os.path.join(gettempdir(), 'update_checker_cache.pkl')
+        update_from_permacache()
+    except NotImplemented:
+        filename = None
 
     @wraps(function)
     def wrapped(obj, package_name, package_version, **extra_data):
@@ -53,7 +59,8 @@ def cache_results(function):
                 return retval
         retval = function(obj, package_name, package_version, **extra_data)
         cache[key] = now, retval
-        save_to_permacache()
+        if filename:
+            save_to_permacache()
         return retval
     return wrapped
 
