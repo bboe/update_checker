@@ -5,9 +5,10 @@ from setuptools import setup
 
 MODULE_NAME = 'update_checker'
 
-README = open(os.path.join(os.path.dirname(__file__), 'README.md')).read()
-VERSION = re.search("__version__ = '([^']+)'",
-                    open('{0}.py'.format(MODULE_NAME)).read()).group(1)
+with open(os.path.join(os.path.dirname(__file__), 'README.md')) as fp:
+    README = fp.read()
+with open('{0}.py'.format(MODULE_NAME)) as fp:
+    VERSION = re.search("__version__ = '([^']+)'", fp.read()).group(1)
 
 setup(name=MODULE_NAME,
       author='Bryce Boe',
