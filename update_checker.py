@@ -34,7 +34,8 @@ def cache_results(function):
     def update_from_permacache():
         """Attempt to update newer items from the permacache."""
         try:
-            permacache = pickle.load(open(filename, 'rb'))
+            with open(filename,'rb') as f:
+                permacache = pickle.load(f)
         except Exception:
             return  # It's okay if it cannot load
         for key, value in permacache.items():
