@@ -11,7 +11,7 @@ from functools import wraps
 from pkg_resources import parse_version as V
 from tempfile import gettempdir
 
-__version__ = '0.6'
+__version__ = '0.7'
 
 
 def cache_results(function):
@@ -34,8 +34,8 @@ def cache_results(function):
     def update_from_permacache():
         """Attempt to update newer items from the permacache."""
         try:
-            with open(filename,'rb') as f:
-                permacache = pickle.load(f)
+            with open(filename, 'rb') as fp:
+                permacache = pickle.load(fp)
         except Exception:
             return  # It's okay if it cannot load
         for key, value in permacache.items():
@@ -97,7 +97,7 @@ class UpdateChecker(object):
     def __init__(self, url=None):
         """Store the URL to use for checking."""
         self.url = url if url \
-            else 'http://update_checker.bryceboe.com:65429/check'
+            else 'http://update_checker.bryceboe.com/check'
 
     @cache_results
     def check(self, package_name, package_version, **extra_data):
