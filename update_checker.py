@@ -11,7 +11,7 @@ from functools import wraps
 from pkg_resources import parse_version as V
 from tempfile import gettempdir
 
-__version__ = '0.7'
+__version__ = '0.8'
 
 
 def cache_results(function):
@@ -109,7 +109,8 @@ class UpdateChecker(object):
         data['platform'] = platform.platform(True)
 
         try:
-            headers = {'content-type': 'application/json', 'Connection': 'close'}
+            headers = {'connection': 'close',
+                       'content-type': 'application/json'}
             response = requests.put(self.url, json.dumps(data), timeout=1,
                                     headers=headers)
             data = response.json()
