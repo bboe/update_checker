@@ -109,7 +109,7 @@ class UpdateChecker(object):
         data['platform'] = platform.platform(True)
 
         try:
-            headers = {'content-type': 'application/json'}
+            headers = {'content-type': 'application/json', 'Connection': 'close'}
             response = requests.put(self.url, json.dumps(data), timeout=1,
                                     headers=headers)
             data = response.json()
