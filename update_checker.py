@@ -15,7 +15,7 @@ from functools import wraps
 from pkg_resources import parse_version as V
 from tempfile import gettempdir
 
-__version__ = '0.8'
+__version__ = '0.9'
 
 
 def cache_results(function):
