@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+
+"""Module that checks if there is an updated version of a package available."""
+
+from __future__ import print_function
 import json
 import os
 import pickle
@@ -15,6 +19,7 @@ __version__ = '0.8'
 
 
 def cache_results(function):
+    """Return decorated function that caches the results."""
     def save_to_permacache():
         """Save the in-memory cache data to the permacache.
 
@@ -36,7 +41,7 @@ def cache_results(function):
         try:
             with open(filename, 'rb') as fp:
                 permacache = pickle.load(fp)
-        except Exception:
+        except Exception:  # TODO: Handle specific exceptions
             return  # It's okay if it cannot load
         for key, value in permacache.items():
             if key not in cache or value[0] > cache[key][0]:
@@ -52,6 +57,7 @@ def cache_results(function):
 
     @wraps(function)
     def wrapped(obj, package_name, package_version, **extra_data):
+        """Return cached results if available."""
         now = time.time()
         key = (package_name, package_version)
         if key in cache:  # Check the in-memory cache
@@ -69,8 +75,11 @@ def cache_results(function):
 # This class must be defined before UpdateChecker in order to unpickle objects
 # of this type
 class UpdateResult(object):
+
     """Contains the information for a package that has an update."""
+
     def __init__(self, package, running, available, release_date):
+        """Initialize an UpdateResult instance."""
         self.available_version = available
         self.package_name = package
         self.running_version = running
@@ -81,6 +90,7 @@ class UpdateResult(object):
             self.release_date = None
 
     def __str__(self):
+        """Return a printable UpdateResult string."""
         retval = ('Version {0} of {1} is outdated. Version {2} '
                   .format(self.running_version, self.package_name,
                           self.available_version))
@@ -93,7 +103,9 @@ class UpdateResult(object):
 
 
 class UpdateChecker(object):
+
     """A class to check for package updates."""
+
     def __init__(self, url=None):
         """Store the URL to use for checking."""
         self.url = url if url \
@@ -127,6 +139,7 @@ class UpdateChecker(object):
 
 
 def pretty_date(the_datetime):
+    """Attempt to return a human-readable time delta string."""
     # Source modified from
     # http://stackoverflow.com/a/5164027/176978
     diff = datetime.utcnow() - the_datetime
