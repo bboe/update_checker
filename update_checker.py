@@ -47,7 +47,7 @@ def cache_results(function):
     try:
         filename = os.path.join(gettempdir(), 'update_checker_cache.pkl')
         update_from_permacache()
-    except NotImplemented:
+    except NotImplementedError:
         filename = None
 
     @wraps(function)
