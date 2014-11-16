@@ -15,7 +15,7 @@ from datetime import datetime
 from functools import wraps
 from tempfile import gettempdir
 
-__version__ = '0.10'
+__version__ = '0.11'
 
 
 def cache_results(function):
