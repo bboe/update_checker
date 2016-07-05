@@ -157,11 +157,11 @@ def pretty_date(the_datetime):
     elif diff.seconds < 120:
         return '1 minute ago'
     elif diff.seconds < 3600:
-        return '{0} minutes ago'.format(diff.seconds / 60)
+        return '{0} minutes ago'.format(int(round(diff.seconds / 60)))
     elif diff.seconds < 7200:
         return '1 hour ago'
     else:
-        return '{0} hours ago'.format(diff.seconds / 3600)
+        return '{0} hours ago'.format(int(round(diff.seconds / 3600)))
 
 
 def update_check(package_name, package_version, url=None, **extra_data):
