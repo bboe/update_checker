@@ -15,7 +15,7 @@ from datetime import datetime
 from functools import wraps
 from tempfile import gettempdir
 
-__version__ = '0.11'
+__version__ = '0.12'
 
 
 def cache_results(function):
@@ -60,7 +60,7 @@ def cache_results(function):
         """Return cached results if available."""
         now = time.time()
         key = (package_name, package_version)
-        if key in cache:  # Check the in-memory cache
+        if not obj.bypass_cache and key in cache:  # Check the in-memory cache
             cache_time, retval = cache[key]
             if now - cache_time < cache_expire_time:
                 return retval
@@ -108,6 +108,7 @@ class UpdateChecker(object):
 
     def __init__(self, url=None):
         """Store the URL to use for checking."""
+        self.bypass_cache = False
         self.url = url if url \
             else 'http://update_checker.bryceboe.com/check'
 
@@ -164,9 +165,11 @@ def pretty_date(the_datetime):
         return '{0} hours ago'.format(int(round(diff.seconds / 3600)))
 
 
-def update_check(package_name, package_version, url=None, **extra_data):
+def update_check(package_name, package_version, bypass_cache=False, url=None,
+                 **extra_data):
     """Convenience method that outputs to stdout if an update is available."""
     checker = UpdateChecker(url)
+    checker.bypass_cache = bypass_cache
     result = checker.check(package_name, package_version, **extra_data)
     if result:
         print(result)

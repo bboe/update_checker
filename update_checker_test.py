@@ -9,34 +9,50 @@ from update_checker import UpdateChecker, update_check
 
 
 class UpdateCheckerTest(unittest.TestCase):
-    def test_bad_package(self):
-        checker = UpdateChecker()
-        self.assertFalse(checker.check('update_checker_slkdflj', '0.0.1'))
+    TRACKED_PACKAGE = 'praw'
+    UNTRACKED_PACKAGE = 'requests'
 
-    def test_bad_url(self):
+    def test_check_check__bad_package(self):
+        checker = UpdateChecker()
+        checker.bypass_cache = True
+        self.assertFalse(checker.check(self.UNTRACKED_PACKAGE, '0.0.1'))
+
+    def test_checker_check__bad_url(self):
         checker = UpdateChecker('http://sdlkjsldfkjsdlkfj.com')
-        self.assertFalse(checker.check('praw', '0.0.1'))
+        checker.bypass_cache = True
+        self.assertFalse(checker.check(self.TRACKED_PACKAGE, '0.0.1'))
 
-    def test_successful(self):
+    def test_checker_check__no_update_to_beta_version(self):
         checker = UpdateChecker()
-        result = checker.check('update_checker', '0.0.1')
+        checker.bypass_cache = True
+        self.assertFalse(checker.check(self.TRACKED_PACKAGE, '3.5'))
+
+    def test_checker_check__update_to_beta_version_from_beta_version(self):
+        checker = UpdateChecker()
+        checker.bypass_cache = True
+        self.assertTrue(checker.check(self.TRACKED_PACKAGE, '3.5.0b1'))
+
+    def test_checker_check__successful(self):
+        checker = UpdateChecker()
+        checker.bypass_cache = True
+        result = checker.check(self.TRACKED_PACKAGE, '1.0.0')
         self.assertTrue(result is not None)
 
-    def test_update_check_failed(self):
+    def test_update_check__failed(self):
         prev_stdout = sys.stdout
         sys.stdout = StringIO()
         try:
-            update_check('update_checker_slkdflj', '0.0.1')
+            update_check(self.UNTRACKED_PACKAGE, '0.0.1', bypass_cache=True)
         finally:
             result = sys.stdout
             sys.stdout = prev_stdout
         self.assertTrue(len(result.getvalue()) == 0)
 
-    def test_update_check_successful(self):
+    def test_update_check__successful(self):
         prev_stdout = sys.stdout
         sys.stdout = StringIO()
         try:
-            update_check('update_checker', '0.0.1')
+            update_check(self.TRACKED_PACKAGE, '0.0.1', bypass_cache=True)
         finally:
             result = sys.stdout
             sys.stdout = prev_stdout
