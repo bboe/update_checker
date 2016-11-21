@@ -110,7 +110,7 @@ class UpdateChecker(object):
         """Store the URL to use for checking."""
         self.bypass_cache = False
         self.url = url if url \
-            else 'http://update_checker.bryceboe.com/check'
+            else 'http://updatechecker.bryceboe.com/check'
 
     @cache_results
     def check(self, package_name, package_version, **extra_data):

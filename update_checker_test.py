@@ -25,12 +25,17 @@ class UpdateCheckerTest(unittest.TestCase):
     def test_checker_check__no_update_to_beta_version(self):
         checker = UpdateChecker()
         checker.bypass_cache = True
-        self.assertFalse(checker.check(self.TRACKED_PACKAGE, '3.5'))
+        self.assertFalse(checker.check(self.TRACKED_PACKAGE, '3.6'))
 
     def test_checker_check__update_to_beta_version_from_beta_version(self):
         checker = UpdateChecker()
         checker.bypass_cache = True
-        self.assertTrue(checker.check(self.TRACKED_PACKAGE, '3.5.0b1'))
+        self.assertTrue(checker.check(self.TRACKED_PACKAGE, '4.0.0b4'))
+
+    def test_checker_check__update_to_rc_version_from_beta_version(self):
+        checker = UpdateChecker()
+        checker.bypass_cache = True
+        self.assertTrue(checker.check(self.TRACKED_PACKAGE, '4.0.0b4'))
 
     def test_checker_check__successful(self):
         checker = UpdateChecker()
