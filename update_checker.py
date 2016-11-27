@@ -16,7 +16,7 @@ from functools import wraps
 from requests.status_codes import codes
 from tempfile import gettempdir
 
-__version__ = '0.14'
+__version__ = '0.15'
 
 
 def cache_results(function):
@@ -120,14 +120,14 @@ class UpdateChecker(object):
         data['package_name'] = package_name
         data['package_version'] = package_version
         data['python_version'] = sys.version.split()[0]
-        data['platform'] = platform.platform(True)
+        data['platform'] = platform.platform(True) or 'Unspecified'
 
         try:
             headers = {'connection': 'close',
                        'content-type': 'application/json'}
             response = requests.put(self.url, json.dumps(data), timeout=1,
                                     headers=headers)
-            if response.status_code == codes.BAD_REQUEST:
+            if response.status_code == codes.UNPROCESSABLE_ENTITY:
                 return 'update_checker does not support {!r}'.format(
                     package_name)
             data = response.json()
