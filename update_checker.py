@@ -13,9 +13,10 @@ import sys
 import time
 from datetime import datetime
 from functools import wraps
+from requests.status_codes import codes
 from tempfile import gettempdir
 
-__version__ = '0.13'
+__version__ = '0.14'
 
 
 def cache_results(function):
@@ -126,6 +127,9 @@ class UpdateChecker(object):
                        'content-type': 'application/json'}
             response = requests.put(self.url, json.dumps(data), timeout=1,
                                     headers=headers)
+            if response.status_code == codes.BAD_REQUEST:
+                return 'update_checker does not support {!r}'.format(
+                    package_name)
             data = response.json()
         except (requests.exceptions.RequestException, ValueError):
             return None

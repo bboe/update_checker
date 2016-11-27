@@ -12,11 +12,6 @@ class UpdateCheckerTest(unittest.TestCase):
     TRACKED_PACKAGE = 'praw'
     UNTRACKED_PACKAGE = 'requests'
 
-    def test_check_check__bad_package(self):
-        checker = UpdateChecker()
-        checker.bypass_cache = True
-        self.assertFalse(checker.check(self.UNTRACKED_PACKAGE, '0.0.1'))
-
     def test_checker_check__bad_url(self):
         checker = UpdateChecker('http://sdlkjsldfkjsdlkfj.com')
         checker.bypass_cache = True
@@ -26,6 +21,12 @@ class UpdateCheckerTest(unittest.TestCase):
         checker = UpdateChecker()
         checker.bypass_cache = True
         self.assertFalse(checker.check(self.TRACKED_PACKAGE, '3.6'))
+
+    def test_check_check__untracked_package(self):
+        checker = UpdateChecker()
+        checker.bypass_cache = True
+        self.assertEqual("update_checker does not support 'requests'",
+                         checker.check(self.UNTRACKED_PACKAGE, '0.0.1'))
 
     def test_checker_check__update_to_beta_version_from_beta_version(self):
         checker = UpdateChecker()
@@ -43,16 +44,6 @@ class UpdateCheckerTest(unittest.TestCase):
         result = checker.check(self.TRACKED_PACKAGE, '1.0.0')
         self.assertTrue(result is not None)
 
-    def test_update_check__failed(self):
-        prev_stdout = sys.stdout
-        sys.stdout = StringIO()
-        try:
-            update_check(self.UNTRACKED_PACKAGE, '0.0.1', bypass_cache=True)
-        finally:
-            result = sys.stdout
-            sys.stdout = prev_stdout
-        self.assertTrue(len(result.getvalue()) == 0)
-
     def test_update_check__successful(self):
         prev_stdout = sys.stdout
         sys.stdout = StringIO()
@@ -62,6 +53,28 @@ class UpdateCheckerTest(unittest.TestCase):
             result = sys.stdout
             sys.stdout = prev_stdout
         self.assertTrue(len(result.getvalue()) > 0)
+
+    def test_update_check__unsuccessful(self):
+        prev_stdout = sys.stdout
+        sys.stdout = StringIO()
+        try:
+            update_check(self.TRACKED_PACKAGE, '0.0.1', bypass_cache=True,
+                         url='http://sdlkjsldfkjsdlkfj.com')
+        finally:
+            result = sys.stdout
+            sys.stdout = prev_stdout
+        self.assertTrue(len(result.getvalue()) == 0)
+
+    def test_update_check__untracked_package(self):
+        prev_stdout = sys.stdout
+        sys.stdout = StringIO()
+        try:
+            update_check(self.UNTRACKED_PACKAGE, '0.0.1', bypass_cache=True)
+        finally:
+            result = sys.stdout
+            sys.stdout = prev_stdout
+        self.assertEqual("update_checker does not support 'requests'\n",
+                         result.getvalue())
 
 
 if __name__ == '__main__':
