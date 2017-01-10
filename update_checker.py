@@ -16,7 +16,11 @@ from functools import wraps
 from requests.status_codes import codes
 from tempfile import gettempdir
 
-__version__ = '0.15'
+__version__ = '0.16'
+
+
+# http://bugs.python.org/issue7980
+datetime.strptime('', '')
 
 
 def cache_results(function):
