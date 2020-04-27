@@ -16,7 +16,7 @@ from functools import wraps
 from requests.status_codes import codes
 from tempfile import gettempdir
 
-__version__ = '0.16'
+__version__ = '0.17'
 
 
 # http://bugs.python.org/issue7980
@@ -175,12 +175,12 @@ def pretty_date(the_datetime):
 
 def update_check(package_name, package_version, bypass_cache=False, url=None,
                  **extra_data):
-    """Convenience method that outputs to stdout if an update is available."""
+    """Convenience method that outputs to stderr if an update is available."""
     checker = UpdateChecker(url)
     checker.bypass_cache = bypass_cache
     result = checker.check(package_name, package_version, **extra_data)
     if result:
-        print(result)
+        print(result, file=sys.stderr)
 
 
 # The following section of code is taken from setuptools pkg_resources.py (PSF
