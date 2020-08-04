@@ -1,30 +1,20 @@
-#!/usr/bin/env python
-
 """Module that checks if there is an updated version of a package available."""
-
-from __future__ import print_function
-import json
 import os
 import pickle
-import platform
 import re
 import requests
 import sys
 import time
 from datetime import datetime
 from functools import wraps
-from requests.status_codes import codes
 from tempfile import gettempdir
 
-__version__ = '0.17'
-
-
-# http://bugs.python.org/issue7980
-datetime.strptime('', '')
+__version__ = "0.18.0"
 
 
 def cache_results(function):
     """Return decorated function that caches the results."""
+
     def save_to_permacache():
         """Save the in-memory cache data to the permacache.
 
@@ -36,7 +26,7 @@ def cache_results(function):
         """
         update_from_permacache()
         try:
-            with open(filename, 'wb') as fp:
+            with open(filename, "wb") as fp:
                 pickle.dump(cache, fp, pickle.HIGHEST_PROTOCOL)
         except IOError:
             pass  # Ignore permacache saving exceptions
@@ -44,7 +34,7 @@ def cache_results(function):
     def update_from_permacache():
         """Attempt to update newer items from the permacache."""
         try:
-            with open(filename, 'rb') as fp:
+            with open(filename, "rb") as fp:
                 permacache = pickle.load(fp)
         except Exception:  # TODO: Handle specific exceptions
             return  # It's okay if it cannot load
@@ -55,7 +45,7 @@ def cache_results(function):
     cache = {}
     cache_expire_time = 3600
     try:
-        filename = os.path.join(gettempdir(), 'update_checker_cache.pkl')
+        filename = os.path.join(gettempdir(), "update_checker_cache.pkl")
         update_from_permacache()
     except NotImplementedError:
         filename = None
@@ -65,7 +55,7 @@ def cache_results(function):
         """Return cached results if available."""
         now = time.time()
         key = (package_name, package_version)
-        if not obj.bypass_cache and key in cache:  # Check the in-memory cache
+        if not obj._bypass_cache and key in cache:  # Check the in-memory cache
             cache_time, retval = cache[key]
             if now - cache_time < cache_expire_time:
                 return retval
@@ -74,12 +64,44 @@ def cache_results(function):
         if filename:
             save_to_permacache()
         return retval
+
     return wrapped
+
+
+def query_pypi(package, include_prereleases):
+    """Return information about the current version of package."""
+    try:
+        response = requests.get(f"https://pypi.org/pypi/{package}/json", timeout=1)
+    except requests.exceptions.RequestException:
+        return {"success": False}
+    if response.status_code != 200:
+        return {"success": False}
+    data = response.json()
+    versions = list(data["releases"].keys())
+    versions.sort(key=parse_version, reverse=True)
+
+    version = versions[0]
+    for tmp_version in versions:
+        if include_prereleases or standard_release(tmp_version):
+            version = tmp_version
+            break
+
+    upload_time = None
+    for file_info in data["releases"][version]:
+        if file_info["upload_time"]:
+            upload_time = file_info["upload_time"]
+            break
+
+    return {"success": True, "data": {"upload_time": upload_time, "version": version}}
+
+
+def standard_release(version):
+    return version.replace(".", "").isdigit()
 
 
 # This class must be defined before UpdateChecker in order to unpickle objects
 # of this type
-class UpdateResult(object):
+class UpdateResult:
 
     """Contains the information for a package that has an update."""
 
@@ -89,63 +111,46 @@ class UpdateResult(object):
         self.package_name = package
         self.running_version = running
         if release_date:
-            self.release_date = datetime.strptime(release_date,
-                                                  '%Y-%m-%dT%H:%M:%S')
+            self.release_date = datetime.strptime(release_date, "%Y-%m-%dT%H:%M:%S")
         else:
             self.release_date = None
 
     def __str__(self):
         """Return a printable UpdateResult string."""
-        retval = ('Version {0} of {1} is outdated. Version {2} '
-                  .format(self.running_version, self.package_name,
-                          self.available_version))
+        retval = f"Version {self.running_version} of {self.package_name} is outdated. Version {self.available_version} "
         if self.release_date:
-            retval += 'was released {0}.'.format(
-                pretty_date(self.release_date))
+            retval += f"was released {pretty_date(self.release_date)}."
         else:
-            retval += 'is available.'
+            retval += "is available."
         return retval
 
 
-class UpdateChecker(object):
+class UpdateChecker:
 
     """A class to check for package updates."""
 
-    def __init__(self, url=None):
-        """Store the URL to use for checking."""
-        self.bypass_cache = False
-        self.url = url if url \
-            else 'http://updatechecker.bryceboe.com/check'
+    def __init__(self, *, bypass_cache=False):
+        self._bypass_cache = bypass_cache
 
     @cache_results
-    def check(self, package_name, package_version, **extra_data):
+    def check(self, package_name, package_version):
         """Return a UpdateResult object if there is a newer version."""
-        data = extra_data
-        data['package_name'] = package_name
-        data['package_version'] = package_version
-        data['python_version'] = sys.version.split()[0]
-        data['platform'] = platform.platform(True) or 'Unspecified'
 
-        try:
-            headers = {'connection': 'close',
-                       'content-type': 'application/json'}
-            response = requests.put(self.url, json.dumps(data), timeout=1,
-                                    headers=headers)
-            if response.status_code == codes.UNPROCESSABLE_ENTITY:
-                return 'update_checker does not support {!r}'.format(
-                    package_name)
-            data = response.json()
-        except (requests.exceptions.RequestException, ValueError):
+        data = query_pypi(
+            package_name, include_prereleases=not standard_release(package_version)
+        )
+
+        if not data.get("success") or (
+            parse_version(package_version) >= parse_version(data["data"]["version"])
+        ):
             return None
 
-        if not data or not data.get('success') \
-                or (parse_version(package_version) >=
-                    parse_version(data['data']['version'])):
-            return None
-
-        return UpdateResult(package_name, running=package_version,
-                            available=data['data']['version'],
-                            release_date=data['data']['upload_time'])
+        return UpdateResult(
+            package_name,
+            running=package_version,
+            available=data["data"]["version"],
+            release_date=data["data"]["upload_time"],
+        )
 
 
 def pretty_date(the_datetime):
@@ -154,31 +159,29 @@ def pretty_date(the_datetime):
     # http://stackoverflow.com/a/5164027/176978
     diff = datetime.utcnow() - the_datetime
     if diff.days > 7 or diff.days < 0:
-        return the_datetime.strftime('%A %B %d, %Y')
+        return the_datetime.strftime("%A %B %d, %Y")
     elif diff.days == 1:
-        return '1 day ago'
+        return "1 day ago"
     elif diff.days > 1:
-        return '{0} days ago'.format(diff.days)
+        return f"{diff.days} days ago"
     elif diff.seconds <= 1:
-        return 'just now'
+        return "just now"
     elif diff.seconds < 60:
-        return '{0} seconds ago'.format(diff.seconds)
+        return f"{diff.seconds} seconds ago"
     elif diff.seconds < 120:
-        return '1 minute ago'
+        return "1 minute ago"
     elif diff.seconds < 3600:
-        return '{0} minutes ago'.format(int(round(diff.seconds / 60)))
+        return f"{int(round(diff.seconds / 60))} minutes ago"
     elif diff.seconds < 7200:
-        return '1 hour ago'
+        return "1 hour ago"
     else:
-        return '{0} hours ago'.format(int(round(diff.seconds / 3600)))
+        return f"{int(round(diff.seconds / 3600))} hours ago"
 
 
-def update_check(package_name, package_version, bypass_cache=False, url=None,
-                 **extra_data):
+def update_check(package_name, package_version, bypass_cache=False):
     """Convenience method that outputs to stderr if an update is available."""
-    checker = UpdateChecker(url)
-    checker.bypass_cache = bypass_cache
-    result = checker.check(package_name, package_version, **extra_data)
+    checker = UpdateChecker(bypass_cache=bypass_cache)
+    result = checker.check(package_name, package_version)
     if result:
         print(result, file=sys.stderr)
 
@@ -187,22 +190,21 @@ def update_check(package_name, package_version, bypass_cache=False, url=None,
 # license). Unfortunately importing pkg_resources to directly use the
 # parse_version function results in some undesired side effects.
 
-component_re = re.compile(r'(\d+ | [a-z]+ | \.| -)', re.VERBOSE)
-replace = {'pre': 'c', 'preview': 'c', '-': 'final-', 'rc': 'c',
-           'dev': '@'}.get
+component_re = re.compile(r"(\d+ | [a-z]+ | \.| -)", re.VERBOSE)
+replace = {"pre": "c", "preview": "c", "-": "final-", "rc": "c", "dev": "@"}.get
 
 
 def _parse_version_parts(s):
     for part in component_re.split(s):
         part = replace(part, part)
-        if not part or part == '.':
+        if not part or part == ".":
             continue
-        if part[:1] in '0123456789':
-            yield part.zfill(8)    # pad for numeric comparison
+        if part[:1] in "0123456789":
+            yield part.zfill(8)  # pad for numeric comparison
         else:
-            yield '*'+part
+            yield "*" + part
 
-    yield '*final'  # ensure that alpha/beta/candidate are before final
+    yield "*final"  # ensure that alpha/beta/candidate are before final
 
 
 def parse_version(s):
@@ -239,12 +241,12 @@ def parse_version(s):
     """
     parts = []
     for part in _parse_version_parts(s.lower()):
-        if part.startswith('*'):
-            if part < '*final':   # remove '-' before a prerelease tag
-                while parts and parts[-1] == '*final-':
+        if part.startswith("*"):
+            if part < "*final":  # remove '-' before a prerelease tag
+                while parts and parts[-1] == "*final-":
                     parts.pop()
             # remove trailing zeros from each series of numeric parts
-            while parts and parts[-1] == '00000000':
+            while parts and parts[-1] == "00000000":
                 parts.pop()
         parts.append(part)
     return tuple(parts)
