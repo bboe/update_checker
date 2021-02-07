@@ -12,6 +12,23 @@ from tempfile import gettempdir
 __version__ = "0.18.0"
 
 
+async def async_query_pypi(package, include_prereleases):
+    """Return information about the current version of package."""
+    import aiohttp
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            response = await session.get(
+                f"https://pypi.org/pypi/{package}/json", timeout=1
+            )
+    except aiohttp.ClientError:
+        return {"success": False}
+    if response.status != 200:
+        return {"success": False}
+    data = await response.json()
+    return handle_response(data, include_prereleases)
+
+
 def cache_results(function):
     """Return decorated function that caches the results."""
 
@@ -68,15 +85,7 @@ def cache_results(function):
     return wrapped
 
 
-def query_pypi(package, include_prereleases):
-    """Return information about the current version of package."""
-    try:
-        response = requests.get(f"https://pypi.org/pypi/{package}/json", timeout=1)
-    except requests.exceptions.RequestException:
-        return {"success": False}
-    if response.status_code != 200:
-        return {"success": False}
-    data = response.json()
+def handle_response(data, include_prereleases):
     versions = list(data["releases"].keys())
     versions.sort(key=parse_version, reverse=True)
 
@@ -93,6 +102,18 @@ def query_pypi(package, include_prereleases):
             break
 
     return {"success": True, "data": {"upload_time": upload_time, "version": version}}
+
+
+def query_pypi(package, include_prereleases):
+    """Return information about the current version of package."""
+    try:
+        response = requests.get(f"https://pypi.org/pypi/{package}/json", timeout=1)
+    except requests.exceptions.RequestException:
+        return {"success": False}
+    if response.status_code != 200:
+        return {"success": False}
+    data = response.json()
+    return handle_response(data, include_prereleases)
 
 
 def standard_release(version):
@@ -129,17 +150,8 @@ class UpdateChecker:
 
     """A class to check for package updates."""
 
-    def __init__(self, *, bypass_cache=False):
-        self._bypass_cache = bypass_cache
-
-    @cache_results
-    def check(self, package_name, package_version):
-        """Return a UpdateResult object if there is a newer version."""
-
-        data = query_pypi(
-            package_name, include_prereleases=not standard_release(package_version)
-        )
-
+    @staticmethod
+    def _parse_data(data, package_name, package_version):
         if not data.get("success") or (
             parse_version(package_version) >= parse_version(data["data"]["version"])
         ):
@@ -151,6 +163,28 @@ class UpdateChecker:
             available=data["data"]["version"],
             release_date=data["data"]["upload_time"],
         )
+
+    def __init__(self, *, bypass_cache=False):
+        self._bypass_cache = bypass_cache
+
+    async def async_check(self, package_name, package_version):
+        """Return a UpdateResult object if there is a newer version."""
+
+        data = await async_query_pypi(
+            package_name, include_prereleases=not standard_release(package_version)
+        )
+
+        return self._parse_data(data, package_name, package_version)
+
+    @cache_results
+    def check(self, package_name, package_version):
+        """Return a UpdateResult object if there is a newer version."""
+
+        data = query_pypi(
+            package_name, include_prereleases=not standard_release(package_version)
+        )
+
+        return self._parse_data(data, package_name, package_version)
 
 
 def pretty_date(the_datetime):
@@ -176,6 +210,14 @@ def pretty_date(the_datetime):
         return "1 hour ago"
     else:
         return f"{int(round(diff.seconds / 3600))} hours ago"
+
+
+async def async_update_check(package_name, package_version):
+    """Convenience method that outputs to stderr if an update is available."""
+    checker = UpdateChecker()
+    result = await checker.async_check(package_name, package_version)
+    if result:
+        print(result, file=sys.stderr)
 
 
 def update_check(package_name, package_version, bypass_cache=False):
