@@ -11,6 +11,7 @@ with open(f"{MODULE_NAME}.py") as fp:
 
 
 extras = {
+    "async": ["aiohttp"],
     "dev": [],
     "lint": ["black", "flake8"],
     "test": ["pytest >=2.7.3"],
