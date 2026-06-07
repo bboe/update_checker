@@ -12,10 +12,9 @@ jobs:
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           python-version: "3.13"
-          activate-environment: true
-      - run: uv pip install -e .[lint]
-      - run: ruff check .
-      - run: ruff format --check .
+      - run: uv sync --group lint
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
 
   test:
     runs-on: ubuntu-latest
@@ -28,6 +27,5 @@ jobs:
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           python-version: ${{ matrix.python-version }}
-          activate-environment: true
-      - run: uv pip install -e .[test]
-      - run: pytest
+      - run: uv sync --group test
+      - run: uv run pytest

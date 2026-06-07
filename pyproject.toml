@@ -1,0 +1,33 @@
+[build-system]
+requires = ["uv_build>=0.8.0,<1.0"]
+build-backend = "uv_build"
+
+[project]
+authors = [{name = "Bryce Boe", email = "bbzbryce@gmail.com"}]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = ["requests>=2.3.0"]
+description = "A python module that will check for package updates."
+license = "BSD-2-Clause"
+license-files = ["LICENSE.txt"]
+name = "update_checker"
+readme = "README.md"
+requires-python = ">=3.9"
+version = "0.18.0"
+
+[project.urls]
+Homepage = "https://github.com/bboe/update_checker"
+
+[dependency-groups]
+dev = [{include-group = "lint"}, {include-group = "test"}]
+lint = ["ruff"]
+test = ["pytest"]
