@@ -44,6 +44,7 @@ REPLACE = {"-": "final-", "dev": "@", "pre": "c", "preview": "c", "rc": "c"}.get
 SECONDS_PER_HOUR = 3600
 SECONDS_PER_MINUTE = 60
 TIMEOUT_SECONDS = 1
+USER_AGENT = f"update_checker/{__version__}"
 
 
 class _Cache:
@@ -99,6 +100,8 @@ class _Cache:
         try:
             with self.filename.open("w") as fp:
                 json.dump(data, fp)
+            # Keep the cache private; it reveals which packages the user runs
+            self.filename.chmod(0o600)
         except OSError:
             pass  # Ignore permacache saving exceptions
 
@@ -300,7 +303,10 @@ async def async_query_pypi(
     timeout = aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
     try:
         async with (
-            aiohttp.ClientSession(timeout=timeout) as session,
+            aiohttp.ClientSession(
+                headers={"User-Agent": USER_AGENT},
+                timeout=timeout,
+            ) as session,
             session.get(
                 f"https://pypi.org/pypi/{quote(package, safe='')}/json",
             ) as response,
@@ -581,7 +587,7 @@ def query_pypi(*, include_prereleases: bool, package: str) -> dict[str, Any]:
     # build_opener keeps the default handlers (notably proxy support) while
     # letting us request a gzip-compressed response
     opener = urllib.request.build_opener()
-    opener.addheaders = [("Accept-Encoding", "gzip")]
+    opener.addheaders = [("Accept-Encoding", "gzip"), ("User-Agent", USER_AGENT)]
     url = f"https://pypi.org/pypi/{quote(package, safe='')}/json"
     try:
         # open raises HTTPError, an OSError, for non-2xx responses
