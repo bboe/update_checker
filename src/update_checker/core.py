@@ -119,6 +119,10 @@ class _Cache:
             return  # It's okay if it cannot load
         try:
             for raw_key, (cache_time, result) in permacache.items():
+                # A non-numeric cache_time would later crash retrieve, so skip
+                # any entry that is not a real timestamp
+                if not isinstance(cache_time, (int, float)):
+                    continue
                 key = tuple(json.loads(raw_key))
                 if key not in self.results or cache_time > self.results[key][0]:
                     self.results[key] = (cache_time, _deserialize_result(result))

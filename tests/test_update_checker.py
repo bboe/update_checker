@@ -22,6 +22,7 @@ from update_checker import (
     update_check,
 )
 from update_checker.core import (
+    CACHE_MISS,
     _Cache,
     _colorize,
     _deserialize_result,
@@ -269,6 +270,22 @@ async def test_async_update_check__unsuccessful(
             package_version="0.0.1",
         )
     assert not capsys.readouterr().err
+
+
+def test_cache_permacache__ignores_non_numeric_timestamp(
+    tmp_path: pathlib.Path,
+) -> None:
+    key = (PACKAGE, "1.0")
+    filename = tmp_path / "cache.json"
+    filename.write_text(json.dumps({json.dumps(key): ["whenever", None]}))
+
+    cache = _Cache()
+    cache.filename = filename
+    cache.initialized = True
+    cache.update_from_permacache()
+    assert key not in cache.results
+    # retrieve must not raise on a poisoned permacache
+    assert cache.retrieve(key) is CACHE_MISS
 
 
 def test_cache_permacache__round_trips_keys_with_special_characters(
