@@ -923,7 +923,7 @@ wheels = [
 
 [[package]]
 name = "update-checker"
-version = "0.18.0"
+version = "1.0.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
