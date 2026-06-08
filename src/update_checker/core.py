@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
@@ -18,11 +19,17 @@ from typing import TYPE_CHECKING, Any
 
 import requests
 
+try:
+    import aiohttp
+except ImportError:  # aiohttp is only required for async support
+    aiohttp = None
+
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Awaitable, Callable, Iterator
 
 __version__ = version("update_checker")
 
+CACHE_MISS = object()
 # COMPONENT_RE and REPLACE support parse_version near the bottom of this module
 COMPONENT_RE = re.compile(r"(\d+ | [a-z]+ | \.| -)", re.VERBOSE)
 DAYS_PER_WEEK = 7
@@ -52,6 +59,21 @@ class _Cache:
             return  # Operate without a permacache
         self.update_from_permacache()
 
+    def retrieve(self, key: tuple[str, str], /) -> UpdateResult | object | None:
+        """Return the fresh cached result for key, or the CACHE_MISS sentinel.
+
+        Returns:
+            The cached result when present and fresh, otherwise CACHE_MISS.
+
+        """
+        if not self.initialized:
+            self.initialize()
+        if key in self.results:
+            cache_time, result = self.results[key]
+            if time.time() - cache_time < self.expire_time:
+                return result
+        return CACHE_MISS
+
     def save_to_permacache(self) -> None:
         """Save the in-memory cache data to the permacache.
 
@@ -71,6 +93,14 @@ class _Cache:
                 json.dump(data, fp)
         except OSError:
             pass  # Ignore permacache saving exceptions
+
+    def store(self, *, key: tuple[str, str], value: UpdateResult | None) -> None:
+        """Record the result for key and persist it to the permacache."""
+        if not self.initialized:
+            self.initialize()
+        self.results[key] = (time.time(), value)
+        if self.filename:
+            self.save_to_permacache()
 
     def update_from_permacache(self) -> None:
         """Attempt to update newer items from the permacache."""
@@ -94,6 +124,25 @@ class UpdateChecker:
     def __init__(self, *, bypass_cache: bool = False) -> None:
         """Initialize an UpdateChecker instance."""
         self._bypass_cache = bypass_cache
+
+    async def async_check(
+        self,
+        *,
+        package_name: str,
+        package_version: str,
+    ) -> UpdateResult | None:
+        """Return a UpdateResult object if there is a newer version.
+
+        Returns:
+            An UpdateResult instance when a newer version exists, otherwise
+            None.
+
+        """
+        return await _async_check(
+            bypass_cache=self._bypass_cache,
+            package_name=package_name,
+            package_version=package_version,
+        )
 
     def check(
         self,
@@ -148,15 +197,131 @@ class UpdateResult:
             A sentence describing the outdated package and newer version.
 
         """
-        retval = (
+        message = (
             f"Version {self.running_version} of {self.package_name} is outdated. "
             f"Version {self.available_version} "
         )
         if self.release_date:
-            retval += f"was released {pretty_date(self.release_date)}."
+            message += f"was released {pretty_date(self.release_date)}."
         else:
-            retval += "is available."
-        return retval
+            message += "is available."
+        return message
+
+
+def async_cache_results(
+    function: Callable[..., Awaitable[UpdateResult | None]],
+    /,
+) -> Callable[..., Awaitable[UpdateResult | None]]:
+    """Return decorated coroutine function that caches the results.
+
+    Returns:
+        The decorated coroutine function.
+
+    """
+    cache = _Cache()
+
+    @wraps(function)
+    async def wrapped(
+        *,
+        bypass_cache: bool = False,
+        package_name: str,
+        package_version: str,
+        **extra_data: object,
+    ) -> UpdateResult | None:
+        """Return cached results if available.
+
+        Returns:
+            The cached result when fresh, otherwise the live result.
+
+        """
+        key = (package_name, package_version)
+        if not bypass_cache:
+            result = cache.retrieve(key)
+            if result is not CACHE_MISS:
+                return result
+        result = await function(
+            package_name=package_name,
+            package_version=package_version,
+            **extra_data,
+        )
+        cache.store(key=key, value=result)
+        return result
+
+    return wrapped
+
+
+@async_cache_results
+async def _async_check(
+    *,
+    package_name: str,
+    package_version: str,
+) -> UpdateResult | None:
+    data = await async_query_pypi(
+        include_prereleases=not standard_release(package_version),
+        package=package_name,
+    )
+    return _result_from_data(
+        data=data,
+        package_name=package_name,
+        package_version=package_version,
+    )
+
+
+async def async_query_pypi(
+    *,
+    include_prereleases: bool,
+    package: str,
+) -> dict[str, Any]:
+    """Return information about the current version of package.
+
+    Returns:
+        A dict with a "success" key. On success, a "data" key maps to a dict
+        with "version" and "upload_time" keys.
+
+    Raises:
+        ImportError: When aiohttp is not installed.
+
+    """
+    if aiohttp is None:
+        msg = "aiohttp is required for async support: pip install update_checker[async]"
+        raise ImportError(msg)
+    timeout = aiohttp.ClientTimeout(total=1)
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(f"https://pypi.org/pypi/{package}/json") as response,
+        ):
+            if response.status != HTTPStatus.OK:
+                return {"success": False}
+            json_data = await response.json()
+    # TimeoutError and asyncio.TimeoutError are distinct prior to Python 3.11
+    except (TimeoutError, ValueError, aiohttp.ClientError, asyncio.TimeoutError):
+        return {"success": False}
+    try:
+        data = _extract_version(
+            include_prereleases=include_prereleases,
+            releases=json_data["releases"],
+        )
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return {"success": False}  # Ignore malformed responses
+
+    return {"success": True, "data": data}
+
+
+async def async_update_check(
+    *,
+    bypass_cache: bool = False,
+    package_name: str,
+    package_version: str,
+) -> None:
+    """Output to stderr if an update to the package is available."""
+    checker = UpdateChecker(bypass_cache=bypass_cache)
+    result = await checker.async_check(
+        package_name=package_name,
+        package_version=package_version,
+    )
+    if result:
+        sys.stderr.write(f"{result}\n")
 
 
 def _cache_directory() -> pathlib.Path:
@@ -193,23 +358,18 @@ def cache_results(
             The cached result when fresh, otherwise the live result.
 
         """
-        if not cache.initialized:
-            cache.initialize()
-        now = time.time()
         key = (package_name, package_version)
-        if not bypass_cache and key in cache.results:  # Check the in-memory cache
-            cache_time, retval = cache.results[key]
-            if now - cache_time < cache.expire_time:
-                return retval
-        retval = function(
+        if not bypass_cache:
+            result = cache.retrieve(key)
+            if result is not CACHE_MISS:
+                return result
+        result = function(
             package_name=package_name,
             package_version=package_version,
             **extra_data,
         )
-        cache.results[key] = now, retval
-        if cache.filename:
-            cache.save_to_permacache()
-        return retval
+        cache.store(key=key, value=result)
+        return result
 
     return wrapped
 
@@ -220,17 +380,10 @@ def _check(*, package_name: str, package_version: str) -> UpdateResult | None:
         include_prereleases=not standard_release(package_version),
         package=package_name,
     )
-
-    if not data.get("success") or (
-        parse_version(package_version) >= parse_version(data["data"]["version"])
-    ):
-        return None
-
-    return UpdateResult(
-        available=data["data"]["version"],
-        package=package_name,
-        release_date=data["data"]["upload_time"],
-        running=package_version,
+    return _result_from_data(
+        data=data,
+        package_name=package_name,
+        package_version=package_version,
     )
 
 
@@ -363,6 +516,25 @@ def pretty_date(the_datetime: datetime, /) -> str:
         if diff.seconds < threshold:
             return message
     return f"{round(diff.seconds / SECONDS_PER_HOUR)} hours ago"
+
+
+def _result_from_data(
+    *,
+    data: dict[str, Any],
+    package_name: str,
+    package_version: str,
+) -> UpdateResult | None:
+    if not data.get("success") or (
+        parse_version(package_version) >= parse_version(data["data"]["version"])
+    ):
+        return None
+
+    return UpdateResult(
+        available=data["data"]["version"],
+        package=package_name,
+        release_date=data["data"]["upload_time"],
+        running=package_version,
+    )
 
 
 def query_pypi(*, include_prereleases: bool, package: str) -> dict[str, Any]:

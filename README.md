@@ -31,7 +31,7 @@ there is an update you can use the following approach:
 from update_checker import UpdateChecker
 
 checker = UpdateChecker()
-result = checker.check("praw", "0.0.1")
+result = checker.check(package_name="praw", package_version="0.0.1")
 if result:  # result is None when an update was not found or a failure occured
     # result is a UpdateResult object that contains the following attributes:
     # * available_version
@@ -40,4 +40,18 @@ if result:  # result is None when an update was not found or a failure occured
     # * release_date (is None if the information isn't available)
     print(result)
     # Conditionally perform other actions
+```
+
+### Async usage
+
+Install the `async` extra (`pip install update_checker[async]`) and use the
+async counterparts:
+
+```python
+from update_checker import UpdateChecker, async_update_check
+
+await async_update_check(package_name="praw", package_version="0.0.1")
+
+checker = UpdateChecker()
+result = await checker.async_check(package_name="praw", package_version="0.0.1")
 ```
