@@ -327,7 +327,7 @@ def _parse_version_parts(s: str, /) -> Iterator[str]:
     yield "*final"  # ensure that alpha/beta/candidate are before final
 
 
-def pretty_date(the_datetime: datetime, /) -> str:  # noqa: PLR0911 -- a return per time bucket
+def pretty_date(the_datetime: datetime, /) -> str:
     """Attempt to return a human-readable time delta string.
 
     Returns:
@@ -344,20 +344,18 @@ def pretty_date(the_datetime: datetime, /) -> str:  # noqa: PLR0911 -- a return 
     diff = datetime.now(timezone.utc) - the_datetime
     if diff.days > DAYS_PER_WEEK or diff.days < 0:
         return the_datetime.strftime("%A %B %d, %Y")
-    if diff.days == 1:
-        return "1 day ago"
-    if diff.days > 1:
-        return f"{diff.days} days ago"
-    if diff.seconds <= 1:
-        return "just now"
-    if diff.seconds < SECONDS_PER_MINUTE:
-        return f"{diff.seconds} seconds ago"
-    if diff.seconds < 2 * SECONDS_PER_MINUTE:
-        return "1 minute ago"
-    if diff.seconds < SECONDS_PER_HOUR:
-        return f"{round(diff.seconds / SECONDS_PER_MINUTE)} minutes ago"
-    if diff.seconds < 2 * SECONDS_PER_HOUR:
-        return "1 hour ago"
+    if diff.days:
+        return "1 day ago" if diff.days == 1 else f"{diff.days} days ago"
+    buckets = (
+        (2, "just now"),
+        (SECONDS_PER_MINUTE, f"{diff.seconds} seconds ago"),
+        (2 * SECONDS_PER_MINUTE, "1 minute ago"),
+        (SECONDS_PER_HOUR, f"{round(diff.seconds / SECONDS_PER_MINUTE)} minutes ago"),
+        (2 * SECONDS_PER_HOUR, "1 hour ago"),
+    )
+    for threshold, message in buckets:
+        if diff.seconds < threshold:
+            return message
     return f"{round(diff.seconds / SECONDS_PER_HOUR)} hours ago"
 
 
