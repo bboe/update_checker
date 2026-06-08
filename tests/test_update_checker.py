@@ -6,6 +6,7 @@ import gzip
 import io
 import json
 import os
+import sys
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -23,6 +24,7 @@ from update_checker import (
 )
 from update_checker.core import (
     CACHE_MISS,
+    USER_AGENT,
     _Cache,
     _colorize,
     _deserialize_result,
@@ -303,6 +305,18 @@ def test_cache_permacache__round_trips_keys_with_special_characters(
     assert key in reader.results
 
 
+def test_cache_permacache__written_with_owner_only_permissions(
+    tmp_path: pathlib.Path,
+) -> None:
+    if sys.platform == "win32":
+        return  # POSIX permission bits are not meaningful on Windows
+    cache = _Cache()
+    cache.filename = tmp_path / "cache.json"
+    cache.initialized = True
+    cache.store(key=(PACKAGE, "1.0"), value=None)
+    assert cache.filename.stat().st_mode & 0o777 == 0o600
+
+
 def test_checker_check__gzip_encoded_response() -> None:
     body = gzip.compress(json.dumps({"releases": {"0.0.1": [], "5.0.0": []}}).encode())
     with fake_sync_pypi(body, content_encoding="gzip"):
@@ -425,6 +439,22 @@ def test_query_pypi__quotes_package_name() -> None:
     with fake_sync_pypi({}) as opener_open:
         query_pypi(include_prereleases=False, package="a/b c")
     assert opener_open.call_args.args[0] == "https://pypi.org/pypi/a%2Fb%20c/json"
+
+
+def test_query_pypi__sets_user_agent() -> None:
+    captured: dict[str, list[tuple[str, str]]] = {}
+
+    def fake_open(opener: object, _url: str, /, **_kwargs: object) -> FakeSyncResponse:
+        captured["headers"] = opener.addheaders
+        return FakeSyncResponse(b"{}")
+
+    with mock.patch(
+        "urllib.request.OpenerDirector.open",
+        autospec=True,
+        side_effect=fake_open,
+    ):
+        query_pypi(include_prereleases=False, package=PACKAGE)
+    assert ("User-Agent", USER_AGENT) in captured["headers"]
 
 
 def test_serialize_result__round_trip() -> None:

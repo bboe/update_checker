@@ -14,11 +14,14 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+    "Typing :: Typed",
 ]
 dependencies = []
 description = "A python module that will check for package updates."
@@ -33,7 +36,10 @@ version = "0.18.0"
 async = ["aiohttp"]
 
 [project.urls]
+Changelog = "https://github.com/bboe/update_checker/blob/main/CHANGELOG.md"
 Homepage = "https://github.com/bboe/update_checker"
+Issues = "https://github.com/bboe/update_checker/issues"
+Source = "https://github.com/bboe/update_checker"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
