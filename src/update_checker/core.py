@@ -282,7 +282,7 @@ async def async_query_pypi(
 
     """
     if aiohttp is None:
-        msg = "aiohttp is required for async support: pip install update_checker[async]"
+        msg = 'aiohttp is required for async support: uv add "update_checker[async]"'
         raise ImportError(msg)
     timeout = aiohttp.ClientTimeout(total=1)
     try:

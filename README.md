@@ -11,7 +11,7 @@ author for information on adding a package to the whitelist.
 
 The update_checker module can be installed via:
 
-    pip install update_checker
+    uv add update_checker
 
 ### Usage
 
@@ -44,7 +44,7 @@ if result:  # result is None when an update was not found or a failure occured
 
 ### Async usage
 
-Install the `async` extra (`pip install update_checker[async]`) and use the
+Install the `async` extra (`uv add "update_checker[async]"`) and use the
 async counterparts:
 
 ```python
