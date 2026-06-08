@@ -12,11 +12,13 @@ import string
 import sys
 import time
 import urllib.request
+import zlib
 from datetime import datetime, timezone
 from functools import wraps
 from http import HTTPStatus
 from importlib.metadata import version
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 try:
     import aiohttp
@@ -25,16 +27,23 @@ except ImportError:  # aiohttp is only required for async support
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
+    from http.client import HTTPResponse
 
 __version__ = version("update_checker")
 
 CACHE_MISS = object()
+CHUNK_SIZE = 65536
 # COMPONENT_RE and REPLACE support parse_version near the bottom of this module
 COMPONENT_RE = re.compile(r"(\d+ | [a-z]+ | \.| -)", re.VERBOSE)
 DAYS_PER_WEEK = 7
+# A runaway guard against memory exhaustion. This bounds the decompressed
+# response, so it must stay above the largest real PyPI JSON (a few MiB);
+# gzip shrinks the transfer but not the parsed payload this limit governs.
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 REPLACE = {"-": "final-", "dev": "@", "pre": "c", "preview": "c", "rc": "c"}.get
 SECONDS_PER_HOUR = 3600
 SECONDS_PER_MINUTE = 60
+TIMEOUT_SECONDS = 1
 
 
 class _Cache:
@@ -84,7 +93,7 @@ class _Cache:
         """
         self.update_from_permacache()
         data = {
-            "|".join(key): [cache_time, _serialize_result(result)]
+            json.dumps(key): [cache_time, _serialize_result(result)]
             for key, (cache_time, result) in self.results.items()
         }
         try:
@@ -110,7 +119,7 @@ class _Cache:
             return  # It's okay if it cannot load
         try:
             for raw_key, (cache_time, result) in permacache.items():
-                key = tuple(raw_key.split("|", 1))
+                key = tuple(json.loads(raw_key))
                 if key not in self.results or cache_time > self.results[key][0]:
                     self.results[key] = (cache_time, _deserialize_result(result))
         except (AttributeError, KeyError, TypeError, ValueError):
@@ -284,15 +293,22 @@ async def async_query_pypi(
     if aiohttp is None:
         msg = 'aiohttp is required for async support: uv add "update_checker[async]"'
         raise ImportError(msg)
-    timeout = aiohttp.ClientTimeout(total=1)
+    timeout = aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
     try:
         async with (
             aiohttp.ClientSession(timeout=timeout) as session,
-            session.get(f"https://pypi.org/pypi/{package}/json") as response,
+            session.get(
+                f"https://pypi.org/pypi/{quote(package, safe='')}/json",
+            ) as response,
         ):
             if response.status != HTTPStatus.OK:
                 return {"success": False}
-            json_data = await response.json()
+            # Cap the body so a hostile response cannot exhaust memory; the
+            # total timeout above already bounds how long reading may take
+            raw = await response.content.read(MAX_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_RESPONSE_BYTES:
+                return {"success": False}
+            json_data = json.loads(raw)
     # TimeoutError and asyncio.TimeoutError are distinct prior to Python 3.11
     except (TimeoutError, ValueError, aiohttp.ClientError, asyncio.TimeoutError):
         return {"success": False}
@@ -437,6 +453,20 @@ def _extract_version(
     return {"upload_time": upload_time, "version": version}
 
 
+def _gunzip_capped(data: bytes, /) -> bytes:
+    # wbits of MAX_WBITS | 16 selects the gzip format
+    decompressor = zlib.decompressobj(wbits=zlib.MAX_WBITS | 16)
+    try:
+        result = decompressor.decompress(data, MAX_RESPONSE_BYTES + 1)
+    except zlib.error as exception:
+        msg = "response could not be decompressed"
+        raise ValueError(msg) from exception
+    if len(result) > MAX_RESPONSE_BYTES or decompressor.unconsumed_tail:
+        msg = "decompressed response exceeded the maximum allowed size"
+        raise ValueError(msg)
+    return result
+
+
 # The following two functions are taken from setuptools pkg_resources.py (PSF
 # license), along with the COMPONENT_RE and REPLACE constants near the top of
 # this module. Unfortunately importing pkg_resources to directly use the
@@ -544,11 +574,18 @@ def query_pypi(*, include_prereleases: bool, package: str) -> dict[str, Any]:
         with "version" and "upload_time" keys.
 
     """
-    url = f"https://pypi.org/pypi/{package}/json"
+    # build_opener keeps the default handlers (notably proxy support) while
+    # letting us request a gzip-compressed response
+    opener = urllib.request.build_opener()
+    opener.addheaders = [("Accept-Encoding", "gzip")]
+    url = f"https://pypi.org/pypi/{quote(package, safe='')}/json"
     try:
-        # urlopen raises HTTPError, an OSError, for non-2xx responses
-        with urllib.request.urlopen(url, timeout=1) as response:
-            json_data = json.load(response)
+        # open raises HTTPError, an OSError, for non-2xx responses
+        with opener.open(url, timeout=TIMEOUT_SECONDS) as response:
+            raw = _read_capped(response)
+            encoding = response.headers.get("Content-Encoding")
+        raw = _gunzip_capped(raw) if encoding == "gzip" else raw
+        json_data = json.loads(raw)
     except (OSError, ValueError):
         return {"success": False}
     try:
@@ -560,6 +597,22 @@ def query_pypi(*, include_prereleases: bool, package: str) -> dict[str, Any]:
         return {"success": False}  # Ignore malformed responses
 
     return {"success": True, "data": data}
+
+
+def _read_capped(response: HTTPResponse, /) -> bytes:
+    deadline = time.monotonic() + TIMEOUT_SECONDS
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := response.read(CHUNK_SIZE):
+        total += len(chunk)
+        if total > MAX_RESPONSE_BYTES:
+            msg = "response exceeded the maximum allowed size"
+            raise ValueError(msg)
+        if time.monotonic() > deadline:
+            msg = "response exceeded the time budget"
+            raise ValueError(msg)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _result_from_data(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import os
@@ -20,9 +21,16 @@ from update_checker import (
     pretty_date,
     update_check,
 )
-from update_checker.core import _colorize, _deserialize_result, _serialize_result
+from update_checker.core import (
+    _Cache,
+    _colorize,
+    _deserialize_result,
+    _serialize_result,
+    query_pypi,
+)
 
 if TYPE_CHECKING:
+    import pathlib
     from typing import Self
 
     import pytest
@@ -30,12 +38,38 @@ if TYPE_CHECKING:
 PACKAGE = "praw"
 
 
+class FakeContent:
+    """Stand-in for the StreamReader exposed by an aiohttp response."""
+
+    def __init__(self, body: bytes, /) -> None:
+        """Initialize a FakeContent instance."""
+        self._body = body
+
+    async def read(self, size: int = -1, /) -> bytes:
+        """Return up to size bytes of the canned body.
+
+        Returns:
+            The first size bytes of the body, or all of it when size is
+            negative.
+
+        """
+        return self._body if size < 0 else self._body[:size]
+
+
 class FakeResponse:
     """Async context manager standing in for an aiohttp response."""
 
-    def __init__(self, *, json_data: object = None, status: int = 200) -> None:
+    def __init__(
+        self,
+        *,
+        body: bytes | None = None,
+        json_data: object = None,
+        status: int = 200,
+    ) -> None:
         """Initialize a FakeResponse instance."""
-        self.json_data = json_data
+        if body is None:
+            body = b"" if json_data is None else json.dumps(json_data).encode()
+        self.content = FakeContent(body)
         self.status = status
 
     async def __aenter__(self) -> Self:
@@ -49,17 +83,6 @@ class FakeResponse:
 
     async def __aexit__(self, *_exc_info: object) -> None:
         """Do nothing."""
-
-    async def json(self) -> object:
-        """Return the canned JSON payload, or raise the canned exception.
-
-        Returns:
-            The canned JSON payload.
-
-        """
-        if isinstance(self.json_data, Exception):
-            raise self.json_data
-        return self.json_data
 
 
 class FakeSession:
@@ -98,19 +121,39 @@ class FakeSession:
         return self._response
 
 
+class FakeSyncResponse(io.BytesIO):
+    """Context manager standing in for an HTTPResponse from urlopen."""
+
+    def __init__(self, body: bytes, /, *, content_encoding: str | None = None) -> None:
+        """Initialize a FakeSyncResponse instance."""
+        super().__init__(body)
+        self.headers = (
+            {"Content-Encoding": content_encoding} if content_encoding else {}
+        )
+
+
 def fake_async_pypi(response: FakeResponse | Exception, /) -> mock._patch:
     return mock.patch("aiohttp.ClientSession", partial(FakeSession, response))
 
 
-def fake_sync_pypi(response: bytes | Exception | object, /) -> mock._patch:
+def fake_sync_pypi(
+    response: bytes | Exception | object,
+    /,
+    *,
+    content_encoding: str | None = None,
+) -> mock._patch:
+    target = "urllib.request.OpenerDirector.open"
     if isinstance(response, Exception):
-        return mock.patch("urllib.request.urlopen", side_effect=response)
+        return mock.patch(target, side_effect=response)
     body = response if isinstance(response, bytes) else json.dumps(response).encode()
-    return mock.patch("urllib.request.urlopen", return_value=io.BytesIO(body))
+    return mock.patch(
+        target,
+        return_value=FakeSyncResponse(body, content_encoding=content_encoding),
+    )
 
 
 async def test_async_checker_check__malformed_json() -> None:
-    with fake_async_pypi(FakeResponse(json_data=ValueError("not json"))):
+    with fake_async_pypi(FakeResponse(body=b"not json")):
         checker = UpdateChecker(bypass_cache=True)
         result = await checker.async_check(
             package_name=PACKAGE,
@@ -121,6 +164,20 @@ async def test_async_checker_check__malformed_json() -> None:
 
 async def test_async_checker_check__missing_releases() -> None:
     with fake_async_pypi(FakeResponse(json_data={})):
+        checker = UpdateChecker(bypass_cache=True)
+        result = await checker.async_check(
+            package_name=PACKAGE,
+            package_version="1.0.0",
+        )
+    assert result is None
+
+
+async def test_async_checker_check__oversized_response() -> None:
+    response = FakeResponse(json_data={"releases": {"0.0.1": [], "5.0.0": []}})
+    with (
+        mock.patch("update_checker.core.MAX_RESPONSE_BYTES", 4),
+        fake_async_pypi(response),
+    ):
         checker = UpdateChecker(bypass_cache=True)
         result = await checker.async_check(
             package_name=PACKAGE,
@@ -214,6 +271,29 @@ async def test_async_update_check__unsuccessful(
     assert not capsys.readouterr().err
 
 
+def test_cache_permacache__round_trips_keys_with_special_characters(
+    tmp_path: pathlib.Path,
+) -> None:
+    key = ("name|with|pipes", "1.0")
+    writer = _Cache()
+    writer.filename = tmp_path / "cache.json"
+    writer.initialized = True
+    writer.store(key=key, value=None)
+
+    reader = _Cache()
+    reader.filename = tmp_path / "cache.json"
+    reader.update_from_permacache()
+    assert key in reader.results
+
+
+def test_checker_check__gzip_encoded_response() -> None:
+    body = gzip.compress(json.dumps({"releases": {"0.0.1": [], "5.0.0": []}}).encode())
+    with fake_sync_pypi(body, content_encoding="gzip"):
+        checker = UpdateChecker(bypass_cache=True)
+        result = checker.check(package_name=PACKAGE, package_version="1.0.0")
+    assert result.available_version == "5.0.0"
+
+
 def test_checker_check__malformed_json() -> None:
     with fake_sync_pypi(b"not json"):
         checker = UpdateChecker(bypass_cache=True)
@@ -232,6 +312,27 @@ def test_checker_check__no_update_to_beta_version() -> None:
     with fake_sync_pypi({"releases": {"0.0.1": [], "3.7.0b1": []}}):
         checker = UpdateChecker(bypass_cache=True)
         result = checker.check(package_name=PACKAGE, package_version="3.6")
+    assert result is None
+
+
+def test_checker_check__oversized_decompressed_response() -> None:
+    body = gzip.compress(json.dumps({"releases": {"x" * 10000: []}}).encode())
+    with (
+        mock.patch("update_checker.core.MAX_RESPONSE_BYTES", len(body) + 100),
+        fake_sync_pypi(body, content_encoding="gzip"),
+    ):
+        checker = UpdateChecker(bypass_cache=True)
+        result = checker.check(package_name=PACKAGE, package_version="1.0.0")
+    assert result is None
+
+
+def test_checker_check__oversized_response() -> None:
+    with (
+        mock.patch("update_checker.core.MAX_RESPONSE_BYTES", 4),
+        fake_sync_pypi({"releases": {"0.0.1": [], "5.0.0": []}}),
+    ):
+        checker = UpdateChecker(bypass_cache=True)
+        result = checker.check(package_name=PACKAGE, package_version="1.0.0")
     assert result is None
 
 
@@ -301,6 +402,12 @@ def test_pretty_date__naive_datetime() -> None:
     # previous versions, are interpreted as UTC
     naive_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     assert pretty_date(naive_utc - timedelta(days=3)) == "3 days ago"
+
+
+def test_query_pypi__quotes_package_name() -> None:
+    with fake_sync_pypi({}) as opener_open:
+        query_pypi(include_prereleases=False, package="a/b c")
+    assert opener_open.call_args.args[0] == "https://pypi.org/pypi/a%2Fb%20c/json"
 
 
 def test_serialize_result__round_trip() -> None:
