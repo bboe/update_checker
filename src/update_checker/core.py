@@ -422,4 +422,4 @@ def update_check(
         package_version=package_version,
     )
     if result:
-        print(result, file=sys.stderr)  # noqa: T201 -- printing is the purpose
+        sys.stderr.write(f"{result}\n")
