@@ -31,7 +31,7 @@ license-files = ["LICENSE.txt"]
 name = "update_checker"
 readme = "README.md"
 requires-python = ">=3.10"
-version = "0.18.0"
+version = "1.0.0"
 
 [project.optional-dependencies]
 async = ["aiohttp"]

@@ -2,7 +2,9 @@
 
 This project adheres to [Semantic Versioning](https://semver.org).
 
-## Unreleased
+## 1.0.0 - 2026-06-08
+
+First stable release, marking a commitment to the current public API.
 
 ### Added
 
@@ -18,6 +20,8 @@ This project adheres to [Semantic Versioning](https://semver.org).
 
 ### Changed
 
+- The helpers and `UpdateChecker` methods now take keyword-only arguments;
+  `update_check(package_name, package_version)` remains positional.
 - Packaging migrated to uv with a `src` layout and the `uv_build` backend.
 - The update notice no longer reports version-bump metadata.
 
