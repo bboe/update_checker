@@ -20,7 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
-dependencies = ["requests>=2.3.0"]
+dependencies = []
 description = "A python module that will check for package updates."
 license = "BSD-2-Clause"
 license-files = ["LICENSE.txt"]

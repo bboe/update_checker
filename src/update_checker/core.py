@@ -11,13 +11,12 @@ import re
 import string
 import sys
 import time
+import urllib.request
 from datetime import datetime, timezone
 from functools import wraps
 from http import HTTPStatus
 from importlib.metadata import version
 from typing import TYPE_CHECKING, Any
-
-import requests
 
 try:
     import aiohttp
@@ -387,7 +386,7 @@ def _check(*, package_name: str, package_version: str) -> UpdateResult | None:
     )
 
 
-def _deserialize_result(data: dict[str, str | None] | None) -> UpdateResult | None:
+def _deserialize_result(data: dict[str, str | None] | None, /) -> UpdateResult | None:
     if data is None:
         return None
     return UpdateResult(
@@ -518,6 +517,32 @@ def pretty_date(the_datetime: datetime, /) -> str:
     return f"{round(diff.seconds / SECONDS_PER_HOUR)} hours ago"
 
 
+def query_pypi(*, include_prereleases: bool, package: str) -> dict[str, Any]:
+    """Return information about the current version of package.
+
+    Returns:
+        A dict with a "success" key. On success, a "data" key maps to a dict
+        with "version" and "upload_time" keys.
+
+    """
+    url = f"https://pypi.org/pypi/{package}/json"
+    try:
+        # urlopen raises HTTPError, an OSError, for non-2xx responses
+        with urllib.request.urlopen(url, timeout=1) as response:
+            json_data = json.load(response)
+    except (OSError, ValueError):
+        return {"success": False}
+    try:
+        data = _extract_version(
+            include_prereleases=include_prereleases,
+            releases=json_data["releases"],
+        )
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return {"success": False}  # Ignore malformed responses
+
+    return {"success": True, "data": data}
+
+
 def _result_from_data(
     *,
     data: dict[str, Any],
@@ -537,32 +562,7 @@ def _result_from_data(
     )
 
 
-def query_pypi(*, include_prereleases: bool, package: str) -> dict[str, Any]:
-    """Return information about the current version of package.
-
-    Returns:
-        A dict with a "success" key. On success, a "data" key maps to a dict
-        with "version" and "upload_time" keys.
-
-    """
-    try:
-        response = requests.get(f"https://pypi.org/pypi/{package}/json", timeout=1)
-    except requests.exceptions.RequestException:
-        return {"success": False}
-    if response.status_code != HTTPStatus.OK:
-        return {"success": False}
-    try:
-        data = _extract_version(
-            include_prereleases=include_prereleases,
-            releases=response.json()["releases"],
-        )
-    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
-        return {"success": False}  # Ignore malformed responses
-
-    return {"success": True, "data": data}
-
-
-def _serialize_result(result: UpdateResult | None) -> dict[str, str | None] | None:
+def _serialize_result(result: UpdateResult | None, /) -> dict[str, str | None] | None:
     if result is None:
         return None
     return {
