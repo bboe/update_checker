@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
+import os
 import pathlib
-import pickle  # noqa: S403 -- permacache slated for replacement with JSON
 import re
 import string
 import sys
@@ -12,7 +14,6 @@ from datetime import datetime, timezone
 from functools import wraps
 from http import HTTPStatus
 from importlib.metadata import version
-from tempfile import gettempdir
 from typing import TYPE_CHECKING, Any
 
 import requests
@@ -28,6 +29,63 @@ DAYS_PER_WEEK = 7
 REPLACE = {"-": "final-", "dev": "@", "pre": "c", "preview": "c", "rc": "c"}.get
 SECONDS_PER_HOUR = 3600
 SECONDS_PER_MINUTE = 60
+
+
+class _Cache:
+    """In-memory cache of check results backed by a JSON permacache."""
+
+    def __init__(self) -> None:
+        """Initialize a _Cache instance."""
+        self.expire_time = SECONDS_PER_HOUR
+        self.filename: pathlib.Path | None = None
+        self.initialized = False
+        self.results: dict[tuple[str, ...], tuple[float, UpdateResult | None]] = {}
+
+    def initialize(self) -> None:
+        """Determine the permacache location and load it on first use."""
+        self.initialized = True
+        try:
+            directory = _cache_directory()
+            directory.mkdir(exist_ok=True, parents=True)
+            self.filename = directory / "cache.json"
+        except OSError:
+            return  # Operate without a permacache
+        self.update_from_permacache()
+
+    def save_to_permacache(self) -> None:
+        """Save the in-memory cache data to the permacache.
+
+        There is a race condition here between two processes updating at the
+        same time. It's perfectly acceptable to lose and/or corrupt the
+        permacache information as each process's in-memory cache will remain
+        in-tact.
+
+        """
+        self.update_from_permacache()
+        data = {
+            "|".join(key): [cache_time, _serialize_result(result)]
+            for key, (cache_time, result) in self.results.items()
+        }
+        try:
+            with self.filename.open("w") as fp:
+                json.dump(data, fp)
+        except OSError:
+            pass  # Ignore permacache saving exceptions
+
+    def update_from_permacache(self) -> None:
+        """Attempt to update newer items from the permacache."""
+        try:
+            with self.filename.open() as fp:
+                permacache = json.load(fp)
+        except (OSError, ValueError):
+            return  # It's okay if it cannot load
+        try:
+            for raw_key, (cache_time, result) in permacache.items():
+                key = tuple(raw_key.split("|", 1))
+                if key not in self.results or cache_time > self.results[key][0]:
+                    self.results[key] = (cache_time, _deserialize_result(result))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass  # It's okay to ignore malformed permacache data
 
 
 class UpdateChecker:
@@ -69,16 +127,19 @@ class UpdateResult:
         running: str,
     ) -> None:
         """Initialize an UpdateResult instance."""
-        self.available_version = available
+        # Strip non-printable characters, e.g., terminal escape sequences,
+        # from the network-provided version
+        self.available_version = re.sub(r"[^ -~]", "", available)
         self.package_name = package
         self.running_version = running
+        self.release_date = None
         if release_date:
-            self.release_date = datetime.strptime(
-                release_date,
-                "%Y-%m-%dT%H:%M:%S",
-            ).replace(tzinfo=timezone.utc)
-        else:
-            self.release_date = None
+            # Treat malformed release dates as missing
+            with contextlib.suppress(TypeError, ValueError):
+                self.release_date = datetime.strptime(
+                    release_date,
+                    "%Y-%m-%dT%H:%M:%S",
+                ).replace(tzinfo=timezone.utc)
 
     def __str__(self) -> str:
         """Return a printable UpdateResult string.
@@ -98,55 +159,25 @@ class UpdateResult:
         return retval
 
 
-def cache_results(  # noqa: C901 -- the nested helpers inflate the count
+def _cache_directory() -> pathlib.Path:
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or "~/AppData/Local"
+    else:
+        base = os.environ.get("XDG_CACHE_HOME") or "~/.cache"
+    return pathlib.Path(base).expanduser() / "update_checker"
+
+
+def cache_results(
     function: Callable[..., UpdateResult | None],
     /,
 ) -> Callable[..., UpdateResult | None]:
     """Return decorated function that caches the results.
 
-    Note: the classes above must be defined before this decorator is applied
-    so that loading the permacache at decoration time can unpickle their
-    instances.
-
     Returns:
         The decorated function.
 
     """
-
-    def save_to_permacache() -> None:
-        """Save the in-memory cache data to the permacache.
-
-        There is a race condition here between two processes updating at the
-        same time. It's perfectly acceptable to lose and/or corrupt the
-        permacache information as each process's in-memory cache will remain
-        in-tact.
-
-        """
-        update_from_permacache()
-        try:
-            with filename.open("wb") as fp:
-                pickle.dump(cache, fp, pickle.HIGHEST_PROTOCOL)
-        except OSError:
-            pass  # Ignore permacache saving exceptions
-
-    def update_from_permacache() -> None:
-        """Attempt to update newer items from the permacache."""
-        try:
-            with filename.open("rb") as fp:
-                permacache = pickle.load(fp)  # noqa: S301 -- slated for JSON
-        except Exception:  # noqa: BLE001 -- unpickling can raise anything
-            return  # It's okay if it cannot load
-        for key, value in permacache.items():
-            if key not in cache or value[0] > cache[key][0]:
-                cache[key] = value
-
-    cache = {}
-    cache_expire_time = SECONDS_PER_HOUR
-    try:
-        filename = pathlib.Path(gettempdir()) / "update_checker_cache.pkl"
-        update_from_permacache()
-    except NotImplementedError:
-        filename = None
+    cache = _Cache()
 
     @wraps(function)
     def wrapped(
@@ -162,20 +193,22 @@ def cache_results(  # noqa: C901 -- the nested helpers inflate the count
             The cached result when fresh, otherwise the live result.
 
         """
+        if not cache.initialized:
+            cache.initialize()
         now = time.time()
         key = (package_name, package_version)
-        if not bypass_cache and key in cache:  # Check the in-memory cache
-            cache_time, retval = cache[key]
-            if now - cache_time < cache_expire_time:
+        if not bypass_cache and key in cache.results:  # Check the in-memory cache
+            cache_time, retval = cache.results[key]
+            if now - cache_time < cache.expire_time:
                 return retval
         retval = function(
             package_name=package_name,
             package_version=package_version,
             **extra_data,
         )
-        cache[key] = now, retval
-        if filename:
-            save_to_permacache()
+        cache.results[key] = now, retval
+        if cache.filename:
+            cache.save_to_permacache()
         return retval
 
     return wrapped
@@ -199,6 +232,38 @@ def _check(*, package_name: str, package_version: str) -> UpdateResult | None:
         release_date=data["data"]["upload_time"],
         running=package_version,
     )
+
+
+def _deserialize_result(data: dict[str, str | None] | None) -> UpdateResult | None:
+    if data is None:
+        return None
+    return UpdateResult(
+        available=data["available"],
+        package=data["package"],
+        release_date=data["release_date"],
+        running=data["running"],
+    )
+
+
+def _extract_version(
+    *,
+    include_prereleases: bool,
+    releases: dict[str, list[dict[str, Any]]],
+) -> dict[str, str | None]:
+    versions = sorted(releases, key=parse_version, reverse=True)
+    version = versions[0]
+    for tmp_version in versions:
+        if include_prereleases or standard_release(tmp_version):
+            version = tmp_version
+            break
+
+    upload_time = None
+    for file_info in releases[version]:
+        if file_info["upload_time"]:
+            upload_time = file_info["upload_time"]
+            break
+
+    return {"upload_time": upload_time, "version": version}
 
 
 # The following two functions are taken from setuptools pkg_resources.py (PSF
@@ -268,7 +333,7 @@ def _parse_version_parts(s: str, /) -> Iterator[str]:
     yield "*final"  # ensure that alpha/beta/candidate are before final
 
 
-def pretty_date(the_datetime: datetime, /) -> str:  # noqa: PLR0911 -- a return per time bucket
+def pretty_date(the_datetime: datetime, /) -> str:
     """Attempt to return a human-readable time delta string.
 
     Returns:
@@ -285,20 +350,18 @@ def pretty_date(the_datetime: datetime, /) -> str:  # noqa: PLR0911 -- a return 
     diff = datetime.now(timezone.utc) - the_datetime
     if diff.days > DAYS_PER_WEEK or diff.days < 0:
         return the_datetime.strftime("%A %B %d, %Y")
-    if diff.days == 1:
-        return "1 day ago"
-    if diff.days > 1:
-        return f"{diff.days} days ago"
-    if diff.seconds <= 1:
-        return "just now"
-    if diff.seconds < SECONDS_PER_MINUTE:
-        return f"{diff.seconds} seconds ago"
-    if diff.seconds < 2 * SECONDS_PER_MINUTE:
-        return "1 minute ago"
-    if diff.seconds < SECONDS_PER_HOUR:
-        return f"{round(diff.seconds / SECONDS_PER_MINUTE)} minutes ago"
-    if diff.seconds < 2 * SECONDS_PER_HOUR:
-        return "1 hour ago"
+    if diff.days:
+        return "1 day ago" if diff.days == 1 else f"{diff.days} days ago"
+    buckets = (
+        (2, "just now"),
+        (SECONDS_PER_MINUTE, f"{diff.seconds} seconds ago"),
+        (2 * SECONDS_PER_MINUTE, "1 minute ago"),
+        (SECONDS_PER_HOUR, f"{round(diff.seconds / SECONDS_PER_MINUTE)} minutes ago"),
+        (2 * SECONDS_PER_HOUR, "1 hour ago"),
+    )
+    for threshold, message in buckets:
+        if diff.seconds < threshold:
+            return message
     return f"{round(diff.seconds / SECONDS_PER_HOUR)} hours ago"
 
 
@@ -316,23 +379,30 @@ def query_pypi(*, include_prereleases: bool, package: str) -> dict[str, Any]:
         return {"success": False}
     if response.status_code != HTTPStatus.OK:
         return {"success": False}
-    data = response.json()
-    versions = list(data["releases"].keys())
-    versions.sort(key=parse_version, reverse=True)
+    try:
+        data = _extract_version(
+            include_prereleases=include_prereleases,
+            releases=response.json()["releases"],
+        )
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return {"success": False}  # Ignore malformed responses
 
-    version = versions[0]
-    for tmp_version in versions:
-        if include_prereleases or standard_release(tmp_version):
-            version = tmp_version
-            break
+    return {"success": True, "data": data}
 
-    upload_time = None
-    for file_info in data["releases"][version]:
-        if file_info["upload_time"]:
-            upload_time = file_info["upload_time"]
-            break
 
-    return {"success": True, "data": {"upload_time": upload_time, "version": version}}
+def _serialize_result(result: UpdateResult | None) -> dict[str, str | None] | None:
+    if result is None:
+        return None
+    return {
+        "available": result.available_version,
+        "package": result.package_name,
+        "release_date": (
+            result.release_date.strftime("%Y-%m-%dT%H:%M:%S")
+            if result.release_date
+            else None
+        ),
+        "running": result.running_version,
+    }
 
 
 def standard_release(version: str, /) -> bool:
@@ -358,4 +428,4 @@ def update_check(
         package_version=package_version,
     )
     if result:
-        print(result, file=sys.stderr)  # noqa: T201 -- printing is the purpose
+        sys.stderr.write(f"{result}\n")
