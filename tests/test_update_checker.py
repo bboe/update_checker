@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
+import io
+import json
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from typing import TYPE_CHECKING
 from unittest import mock
 
 import aiohttp
-import requests
-
-if TYPE_CHECKING:
-    from typing import Self
-
-    import pytest
 
 from update_checker import (
     UpdateChecker,
@@ -24,14 +21,12 @@ from update_checker import (
 )
 from update_checker.core import _deserialize_result, _serialize_result
 
+if TYPE_CHECKING:
+    from typing import Self
+
+    import pytest
+
 PACKAGE = "praw"
-
-
-def mock_response(*, latest_version: str = "5.0.0", response: mock.MagicMock) -> None:
-    response.json = mock.Mock(
-        return_value={"releases": {"0.0.1": [], latest_version: []}},
-    )
-    response.status_code = 200
 
 
 class FakeResponse:
@@ -102,12 +97,19 @@ class FakeSession:
         return self._response
 
 
-def fake_pypi(response: FakeResponse | Exception, /) -> mock._patch:
+def fake_async_pypi(response: FakeResponse | Exception, /) -> mock._patch:
     return mock.patch("aiohttp.ClientSession", partial(FakeSession, response))
 
 
+def fake_sync_pypi(response: bytes | Exception | object, /) -> mock._patch:
+    if isinstance(response, Exception):
+        return mock.patch("urllib.request.urlopen", side_effect=response)
+    body = response if isinstance(response, bytes) else json.dumps(response).encode()
+    return mock.patch("urllib.request.urlopen", return_value=io.BytesIO(body))
+
+
 async def test_async_checker_check__malformed_json() -> None:
-    with fake_pypi(FakeResponse(json_data=ValueError("not json"))):
+    with fake_async_pypi(FakeResponse(json_data=ValueError("not json"))):
         checker = UpdateChecker(bypass_cache=True)
         result = await checker.async_check(
             package_name=PACKAGE,
@@ -117,7 +119,7 @@ async def test_async_checker_check__malformed_json() -> None:
 
 
 async def test_async_checker_check__missing_releases() -> None:
-    with fake_pypi(FakeResponse(json_data={})):
+    with fake_async_pypi(FakeResponse(json_data={})):
         checker = UpdateChecker(bypass_cache=True)
         result = await checker.async_check(
             package_name=PACKAGE,
@@ -127,7 +129,7 @@ async def test_async_checker_check__missing_releases() -> None:
 
 
 async def test_async_checker_check__status_error() -> None:
-    with fake_pypi(FakeResponse(status=503)):
+    with fake_async_pypi(FakeResponse(status=503)):
         checker = UpdateChecker(bypass_cache=True)
         result = await checker.async_check(
             package_name=PACKAGE,
@@ -138,7 +140,7 @@ async def test_async_checker_check__status_error() -> None:
 
 async def test_async_checker_check__successful() -> None:
     response = FakeResponse(json_data={"releases": {"0.0.1": [], "5.0.0": []}})
-    with fake_pypi(response):
+    with fake_async_pypi(response):
         checker = UpdateChecker(bypass_cache=True)
         result = await checker.async_check(
             package_name=PACKAGE,
@@ -148,7 +150,7 @@ async def test_async_checker_check__successful() -> None:
 
 
 async def test_async_checker_check__timeout() -> None:
-    with fake_pypi(TimeoutError()):
+    with fake_async_pypi(TimeoutError()):
         checker = UpdateChecker(bypass_cache=True)
         result = await checker.async_check(
             package_name=PACKAGE,
@@ -158,7 +160,7 @@ async def test_async_checker_check__timeout() -> None:
 
 
 async def test_async_checker_check__unsuccessful() -> None:
-    with fake_pypi(aiohttp.ClientError()):
+    with fake_async_pypi(aiohttp.ClientError()):
         checker = UpdateChecker(bypass_cache=True)
         result = await checker.async_check(
             package_name=PACKAGE,
@@ -171,7 +173,7 @@ async def test_async_update_check__successful__has_update(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     response = FakeResponse(json_data={"releases": {"0.0.1": [], "5.0.0": []}})
-    with fake_pypi(response):
+    with fake_async_pypi(response):
         await async_update_check(
             bypass_cache=True,
             package_name=PACKAGE,
@@ -186,7 +188,7 @@ async def test_async_update_check__successful__has_update(
 async def test_async_update_check__unsuccessful(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    with fake_pypi(aiohttp.ClientError()):
+    with fake_async_pypi(aiohttp.ClientError()):
         await async_update_check(
             bypass_cache=True,
             package_name=PACKAGE,
@@ -195,61 +197,60 @@ async def test_async_update_check__unsuccessful(
     assert not capsys.readouterr().err
 
 
-@mock.patch("requests.get")
-def test_checker_check__malformed_json(mock_get: mock.MagicMock) -> None:
-    mock_get.return_value.json = mock.Mock(side_effect=ValueError)
-    mock_get.return_value.status_code = 200
-    checker = UpdateChecker(bypass_cache=True)
-    assert checker.check(package_name=PACKAGE, package_version="1.0.0") is None
+def test_checker_check__malformed_json() -> None:
+    with fake_sync_pypi(b"not json"):
+        checker = UpdateChecker(bypass_cache=True)
+        result = checker.check(package_name=PACKAGE, package_version="1.0.0")
+    assert result is None
 
 
-@mock.patch("requests.get")
-def test_checker_check__missing_releases(mock_get: mock.MagicMock) -> None:
-    mock_get.return_value.json = mock.Mock(return_value={})
-    mock_get.return_value.status_code = 200
-    checker = UpdateChecker(bypass_cache=True)
-    assert checker.check(package_name=PACKAGE, package_version="1.0.0") is None
+def test_checker_check__missing_releases() -> None:
+    with fake_sync_pypi({}):
+        checker = UpdateChecker(bypass_cache=True)
+        result = checker.check(package_name=PACKAGE, package_version="1.0.0")
+    assert result is None
 
 
-@mock.patch("requests.get")
-def test_checker_check__no_update_to_beta_version(mock_get: mock.MagicMock) -> None:
-    mock_response(latest_version="3.7.0b1", response=mock_get.return_value)
-    checker = UpdateChecker(bypass_cache=True)
-    assert checker.check(package_name=PACKAGE, package_version="3.6") is None
+def test_checker_check__no_update_to_beta_version() -> None:
+    with fake_sync_pypi({"releases": {"0.0.1": [], "3.7.0b1": []}}):
+        checker = UpdateChecker(bypass_cache=True)
+        result = checker.check(package_name=PACKAGE, package_version="3.6")
+    assert result is None
 
 
-@mock.patch("requests.get")
-def test_checker_check__successful(mock_get: mock.MagicMock) -> None:
-    mock_response(response=mock_get.return_value)
-    checker = UpdateChecker(bypass_cache=True)
-    result = checker.check(package_name=PACKAGE, package_version="1.0.0")
+def test_checker_check__status_error() -> None:
+    error = urllib.error.HTTPError("url", 503, "unavailable", None, None)
+    with fake_sync_pypi(error):
+        checker = UpdateChecker(bypass_cache=True)
+        result = checker.check(package_name=PACKAGE, package_version="1.0.0")
+    assert result is None
+
+
+def test_checker_check__successful() -> None:
+    with fake_sync_pypi({"releases": {"0.0.1": [], "5.0.0": []}}):
+        checker = UpdateChecker(bypass_cache=True)
+        result = checker.check(package_name=PACKAGE, package_version="1.0.0")
     assert result.available_version == "5.0.0"
 
 
-@mock.patch("requests.get")
-def test_checker_check__unsuccessful(mock_get: mock.MagicMock) -> None:
-    mock_get.side_effect = requests.exceptions.RequestException
-    checker = UpdateChecker(bypass_cache=True)
-    assert checker.check(package_name=PACKAGE, package_version="1.0.0") is None
+def test_checker_check__unsuccessful() -> None:
+    with fake_sync_pypi(urllib.error.URLError("connection refused")):
+        checker = UpdateChecker(bypass_cache=True)
+        result = checker.check(package_name=PACKAGE, package_version="1.0.0")
+    assert result is None
 
 
-@mock.patch("requests.get")
-def test_checker_check__update_to_beta_version_from_beta_version(
-    mock_get: mock.MagicMock,
-) -> None:
-    mock_response(latest_version="4.0.0b5", response=mock_get.return_value)
-    checker = UpdateChecker(bypass_cache=True)
-    result = checker.check(package_name=PACKAGE, package_version="4.0.0b4")
+def test_checker_check__update_to_beta_version_from_beta_version() -> None:
+    with fake_sync_pypi({"releases": {"0.0.1": [], "4.0.0b5": []}}):
+        checker = UpdateChecker(bypass_cache=True)
+        result = checker.check(package_name=PACKAGE, package_version="4.0.0b4")
     assert result.available_version == "4.0.0b5"
 
 
-@mock.patch("requests.get")
-def test_checker_check__update_to_rc_version_from_beta_version(
-    mock_get: mock.MagicMock,
-) -> None:
-    mock_response(latest_version="4.0.0rc1", response=mock_get.return_value)
-    checker = UpdateChecker(bypass_cache=True)
-    result = checker.check(package_name=PACKAGE, package_version="4.0.0b4")
+def test_checker_check__update_to_rc_version_from_beta_version() -> None:
+    with fake_sync_pypi({"releases": {"0.0.1": [], "4.0.0rc1": []}}):
+        checker = UpdateChecker(bypass_cache=True)
+        result = checker.check(package_name=PACKAGE, package_version="4.0.0b4")
     assert result.available_version == "4.0.0rc1"
 
 
@@ -286,36 +287,30 @@ def test_serialize_result__round_trip_none() -> None:
     assert _deserialize_result(_serialize_result(None)) is None
 
 
-@mock.patch("requests.get")
 def test_update_check__successful__has_no_update(
-    mock_get: mock.MagicMock,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    mock_response(latest_version="0.0.2", response=mock_get.return_value)
-    update_check(PACKAGE, "0.0.2", bypass_cache=True)
+    with fake_sync_pypi({"releases": {"0.0.1": [], "0.0.2": []}}):
+        update_check(PACKAGE, "0.0.2", bypass_cache=True)
     assert not capsys.readouterr().err
 
 
-@mock.patch("requests.get")
 def test_update_check__successful__has_update(
-    mock_get: mock.MagicMock,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    mock_response(response=mock_get.return_value)
-    update_check(PACKAGE, "0.0.1", bypass_cache=True)
+    with fake_sync_pypi({"releases": {"0.0.1": [], "5.0.0": []}}):
+        update_check(PACKAGE, "0.0.1", bypass_cache=True)
     assert (
         capsys.readouterr().err
         == "Version 0.0.1 of praw is outdated. Version 5.0.0 is available.\n"
     )
 
 
-@mock.patch("requests.get")
 def test_update_check__unsuccessful(
-    mock_get: mock.MagicMock,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    mock_get.side_effect = requests.exceptions.RequestException
-    update_check(PACKAGE, "0.0.1", bypass_cache=True)
+    with fake_sync_pypi(urllib.error.URLError("connection refused")):
+        update_check(PACKAGE, "0.0.1", bypass_cache=True)
     assert not capsys.readouterr().err
 
 
