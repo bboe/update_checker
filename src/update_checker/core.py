@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
+import os
 import pathlib
-import pickle  # noqa: S403 -- permacache slated for replacement with JSON
 import re
 import string
 import sys
@@ -12,7 +14,6 @@ from datetime import datetime
 from functools import wraps
 from http import HTTPStatus
 from importlib.metadata import version
-from tempfile import gettempdir
 from typing import TYPE_CHECKING, Any
 
 import requests
@@ -69,15 +70,18 @@ class UpdateResult:
         running: str,
     ) -> None:
         """Initialize an UpdateResult instance."""
-        self.available_version = available
+        # Strip non-printable characters, e.g., terminal escape sequences,
+        # from the network-provided version
+        self.available_version = re.sub(r"[^ -~]", "", available)
         self.package_name = package
         self.running_version = running
+        self.release_date = None
         if release_date:
-            self.release_date = datetime.strptime(  # noqa: DTZ007 -- becomes aware in #19
-                release_date, "%Y-%m-%dT%H:%M:%S"
-            )
-        else:
-            self.release_date = None
+            # Treat malformed release dates as missing
+            with contextlib.suppress(TypeError, ValueError):
+                self.release_date = datetime.strptime(  # noqa: DTZ007 -- becomes aware in #19
+                    release_date, "%Y-%m-%dT%H:%M:%S"
+                )
 
     def __str__(self) -> str:
         """Return a printable UpdateResult string.
@@ -97,20 +101,36 @@ class UpdateResult:
         return retval
 
 
+def _cache_directory() -> pathlib.Path:
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or "~"
+    else:
+        base = os.environ.get("XDG_CACHE_HOME") or "~/.cache"
+    return pathlib.Path(base).expanduser() / "update_checker"
+
+
 def cache_results(  # noqa: C901 -- the nested helpers inflate the count
     function: Callable[..., UpdateResult | None],
     /,
 ) -> Callable[..., UpdateResult | None]:
     """Return decorated function that caches the results.
 
-    Note: the classes above must be defined before this decorator is applied
-    so that loading the permacache at decoration time can unpickle their
-    instances.
-
     Returns:
         The decorated function.
 
     """
+
+    def initialize() -> None:
+        """Determine the permacache location and load it on first use."""
+        nonlocal filename, initialized
+        initialized = True
+        try:
+            directory = _cache_directory()
+            directory.mkdir(exist_ok=True, parents=True)
+            filename = directory / "cache.json"
+        except OSError:
+            return  # Operate without a permacache
+        update_from_permacache()
 
     def save_to_permacache() -> None:
         """Save the in-memory cache data to the permacache.
@@ -122,30 +142,35 @@ def cache_results(  # noqa: C901 -- the nested helpers inflate the count
 
         """
         update_from_permacache()
+        data = {
+            "|".join(key): [cache_time, _serialize_result(result)]
+            for key, (cache_time, result) in cache.items()
+        }
         try:
-            with filename.open("wb") as fp:
-                pickle.dump(cache, fp, pickle.HIGHEST_PROTOCOL)
+            with filename.open("w") as fp:
+                json.dump(data, fp)
         except OSError:
             pass  # Ignore permacache saving exceptions
 
     def update_from_permacache() -> None:
         """Attempt to update newer items from the permacache."""
         try:
-            with filename.open("rb") as fp:
-                permacache = pickle.load(fp)  # noqa: S301 -- slated for JSON
-        except Exception:  # noqa: BLE001 -- unpickling can raise anything
+            with filename.open() as fp:
+                permacache = json.load(fp)
+        except (OSError, ValueError):
             return  # It's okay if it cannot load
-        for key, value in permacache.items():
-            if key not in cache or value[0] > cache[key][0]:
-                cache[key] = value
+        try:
+            for raw_key, (cache_time, result) in permacache.items():
+                key = tuple(raw_key.split("|", 1))
+                if key not in cache or cache_time > cache[key][0]:
+                    cache[key] = (cache_time, _deserialize_result(result))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass  # It's okay to ignore malformed permacache data
 
     cache = {}
     cache_expire_time = SECONDS_PER_HOUR
-    try:
-        filename = pathlib.Path(gettempdir()) / "update_checker_cache.pkl"
-        update_from_permacache()
-    except NotImplementedError:
-        filename = None
+    filename = None
+    initialized = False
 
     @wraps(function)
     def wrapped(
@@ -161,6 +186,8 @@ def cache_results(  # noqa: C901 -- the nested helpers inflate the count
             The cached result when fresh, otherwise the live result.
 
         """
+        if not initialized:
+            initialize()
         now = time.time()
         key = (package_name, package_version)
         if not bypass_cache and key in cache:  # Check the in-memory cache
@@ -198,6 +225,38 @@ def _check(*, package_name: str, package_version: str) -> UpdateResult | None:
         release_date=data["data"]["upload_time"],
         running=package_version,
     )
+
+
+def _deserialize_result(data: dict[str, str | None] | None) -> UpdateResult | None:
+    if data is None:
+        return None
+    return UpdateResult(
+        available=data["available"],
+        package=data["package"],
+        release_date=data["release_date"],
+        running=data["running"],
+    )
+
+
+def _extract_version(
+    *,
+    include_prereleases: bool,
+    releases: dict[str, list[dict[str, Any]]],
+) -> dict[str, str | None]:
+    versions = sorted(releases, key=parse_version, reverse=True)
+    version = versions[0]
+    for tmp_version in versions:
+        if include_prereleases or standard_release(tmp_version):
+            version = tmp_version
+            break
+
+    upload_time = None
+    for file_info in releases[version]:
+        if file_info["upload_time"]:
+            upload_time = file_info["upload_time"]
+            break
+
+    return {"upload_time": upload_time, "version": version}
 
 
 # The following two functions are taken from setuptools pkg_resources.py (PSF
@@ -311,23 +370,30 @@ def query_pypi(*, include_prereleases: bool, package: str) -> dict[str, Any]:
         return {"success": False}
     if response.status_code != HTTPStatus.OK:
         return {"success": False}
-    data = response.json()
-    versions = list(data["releases"].keys())
-    versions.sort(key=parse_version, reverse=True)
+    try:
+        data = _extract_version(
+            include_prereleases=include_prereleases,
+            releases=response.json()["releases"],
+        )
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return {"success": False}  # Ignore malformed responses
 
-    version = versions[0]
-    for tmp_version in versions:
-        if include_prereleases or standard_release(tmp_version):
-            version = tmp_version
-            break
+    return {"success": True, "data": data}
 
-    upload_time = None
-    for file_info in data["releases"][version]:
-        if file_info["upload_time"]:
-            upload_time = file_info["upload_time"]
-            break
 
-    return {"success": True, "data": {"upload_time": upload_time, "version": version}}
+def _serialize_result(result: UpdateResult | None) -> dict[str, str | None] | None:
+    if result is None:
+        return None
+    return {
+        "available": result.available_version,
+        "package": result.package_name,
+        "release_date": (
+            result.release_date.strftime("%Y-%m-%dT%H:%M:%S")
+            if result.release_date
+            else None
+        ),
+        "running": result.running_version,
+    }
 
 
 def standard_release(version: str, /) -> bool:
