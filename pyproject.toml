@@ -47,7 +47,8 @@ select = ["ALL"]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = [
     "D103",  # test functions do not need docstrings
-    "PLR2004",  # magic values are expected in test assertions
     "INP001",  # the tests directory is intentionally not a package
+    "PLC2701",  # tests may exercise private helpers
+    "PLR2004",  # magic values are expected in test assertions
     "S101",  # pytest relies on assert
 ]
