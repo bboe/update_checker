@@ -8,7 +8,7 @@ import re
 import string
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 from http import HTTPStatus
 from importlib.metadata import version
@@ -73,9 +73,10 @@ class UpdateResult:
         self.package_name = package
         self.running_version = running
         if release_date:
-            self.release_date = datetime.strptime(  # noqa: DTZ007 -- becomes aware in #19
-                release_date, "%Y-%m-%dT%H:%M:%S"
-            )
+            self.release_date = datetime.strptime(
+                release_date,
+                "%Y-%m-%dT%H:%M:%S",
+            ).replace(tzinfo=timezone.utc)
         else:
             self.release_date = None
 
@@ -277,7 +278,11 @@ def pretty_date(the_datetime: datetime, /) -> str:  # noqa: PLR0911 -- a return 
     """
     # Source modified from
     # http://stackoverflow.com/a/5164027/176978
-    diff = datetime.utcnow() - the_datetime  # noqa: DTZ003 -- becomes aware in #19
+    if the_datetime.tzinfo is None:
+        # Handle naive datetimes, such as those unpickled from the permacache
+        # written by previous versions
+        the_datetime = the_datetime.replace(tzinfo=timezone.utc)
+    diff = datetime.now(timezone.utc) - the_datetime
     if diff.days > DAYS_PER_WEEK or diff.days < 0:
         return the_datetime.strftime("%A %B %d, %Y")
     if diff.days == 1:

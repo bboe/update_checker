@@ -1,11 +1,12 @@
 """Tests for the update_checker package."""
 
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import pytest
 import requests
 
-from update_checker import UpdateChecker, update_check
+from update_checker import UpdateChecker, UpdateResult, pretty_date, update_check
 
 PACKAGE = "praw"
 
@@ -59,6 +60,21 @@ def test_checker_check__update_to_rc_version_from_beta_version(
     assert result.available_version == "4.0.0rc1"
 
 
+def test_pretty_date__aware_datetime() -> None:
+    assert pretty_date(datetime.now(timezone.utc) - timedelta(days=3)) == "3 days ago"
+
+
+def test_pretty_date__just_now() -> None:
+    assert pretty_date(datetime.now(timezone.utc)) == "just now"
+
+
+def test_pretty_date__naive_datetime() -> None:
+    # Naive datetimes, such as those unpickled from permacaches written by
+    # previous versions, are interpreted as UTC
+    naive_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    assert pretty_date(naive_utc - timedelta(days=3)) == "3 days ago"
+
+
 @mock.patch("requests.get")
 def test_update_check__successful__has_no_update(
     mock_get: mock.MagicMock,
@@ -90,3 +106,27 @@ def test_update_check__unsuccessful(
     mock_get.side_effect = requests.exceptions.RequestException
     update_check(PACKAGE, "0.0.1", bypass_cache=True)
     assert not capsys.readouterr().err
+
+
+def test_update_result__release_date_is_timezone_aware() -> None:
+    result = UpdateResult(
+        available="2.0",
+        package=PACKAGE,
+        release_date="2026-06-01T12:00:00",
+        running="1.0",
+    )
+    assert result.release_date.tzinfo == timezone.utc
+
+
+def test_update_result__str_with_release_date() -> None:
+    release_date = datetime.now(timezone.utc) - timedelta(days=3)
+    result = UpdateResult(
+        available="2.0",
+        package=PACKAGE,
+        release_date=release_date.strftime("%Y-%m-%dT%H:%M:%S"),
+        running="1.0",
+    )
+    assert (
+        str(result) == "Version 1.0 of praw is outdated. "
+        "Version 2.0 was released 3 days ago."
+    )
