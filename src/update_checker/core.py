@@ -31,6 +31,63 @@ SECONDS_PER_HOUR = 3600
 SECONDS_PER_MINUTE = 60
 
 
+class _Cache:
+    """In-memory cache of check results backed by a JSON permacache."""
+
+    def __init__(self) -> None:
+        """Initialize a _Cache instance."""
+        self.expire_time = SECONDS_PER_HOUR
+        self.filename: pathlib.Path | None = None
+        self.initialized = False
+        self.results: dict[tuple[str, ...], tuple[float, UpdateResult | None]] = {}
+
+    def initialize(self) -> None:
+        """Determine the permacache location and load it on first use."""
+        self.initialized = True
+        try:
+            directory = _cache_directory()
+            directory.mkdir(exist_ok=True, parents=True)
+            self.filename = directory / "cache.json"
+        except OSError:
+            return  # Operate without a permacache
+        self.update_from_permacache()
+
+    def save_to_permacache(self) -> None:
+        """Save the in-memory cache data to the permacache.
+
+        There is a race condition here between two processes updating at the
+        same time. It's perfectly acceptable to lose and/or corrupt the
+        permacache information as each process's in-memory cache will remain
+        in-tact.
+
+        """
+        self.update_from_permacache()
+        data = {
+            "|".join(key): [cache_time, _serialize_result(result)]
+            for key, (cache_time, result) in self.results.items()
+        }
+        try:
+            with self.filename.open("w") as fp:
+                json.dump(data, fp)
+        except OSError:
+            pass  # Ignore permacache saving exceptions
+
+    def update_from_permacache(self) -> None:
+        """Attempt to update newer items from the permacache."""
+        try:
+            with self.filename.open() as fp:
+                permacache = json.load(fp)
+        except (OSError, ValueError):
+            return  # It's okay if it cannot load
+        try:
+            for raw_key, (cache_time, result) in permacache.items():
+                key = tuple(raw_key.split("|", 1))
+                if key not in self.results or cache_time > self.results[key][0]:
+                    self.results[key] = (cache_time, _deserialize_result(result))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass  # It's okay to ignore malformed permacache data
+
+
 class UpdateChecker:
     """A class to check for package updates."""
 
@@ -110,7 +167,7 @@ def _cache_directory() -> pathlib.Path:
     return pathlib.Path(base).expanduser() / "update_checker"
 
 
-def cache_results(  # noqa: C901 -- the nested helpers inflate the count
+def cache_results(
     function: Callable[..., UpdateResult | None],
     /,
 ) -> Callable[..., UpdateResult | None]:
@@ -120,58 +177,7 @@ def cache_results(  # noqa: C901 -- the nested helpers inflate the count
         The decorated function.
 
     """
-
-    def initialize() -> None:
-        """Determine the permacache location and load it on first use."""
-        nonlocal filename, initialized
-        initialized = True
-        try:
-            directory = _cache_directory()
-            directory.mkdir(exist_ok=True, parents=True)
-            filename = directory / "cache.json"
-        except OSError:
-            return  # Operate without a permacache
-        update_from_permacache()
-
-    def save_to_permacache() -> None:
-        """Save the in-memory cache data to the permacache.
-
-        There is a race condition here between two processes updating at the
-        same time. It's perfectly acceptable to lose and/or corrupt the
-        permacache information as each process's in-memory cache will remain
-        in-tact.
-
-        """
-        update_from_permacache()
-        data = {
-            "|".join(key): [cache_time, _serialize_result(result)]
-            for key, (cache_time, result) in cache.items()
-        }
-        try:
-            with filename.open("w") as fp:
-                json.dump(data, fp)
-        except OSError:
-            pass  # Ignore permacache saving exceptions
-
-    def update_from_permacache() -> None:
-        """Attempt to update newer items from the permacache."""
-        try:
-            with filename.open() as fp:
-                permacache = json.load(fp)
-        except (OSError, ValueError):
-            return  # It's okay if it cannot load
-        try:
-            for raw_key, (cache_time, result) in permacache.items():
-                key = tuple(raw_key.split("|", 1))
-                if key not in cache or cache_time > cache[key][0]:
-                    cache[key] = (cache_time, _deserialize_result(result))
-        except (AttributeError, KeyError, TypeError, ValueError):
-            pass  # It's okay to ignore malformed permacache data
-
-    cache = {}
-    cache_expire_time = SECONDS_PER_HOUR
-    filename = None
-    initialized = False
+    cache = _Cache()
 
     @wraps(function)
     def wrapped(
@@ -187,22 +193,22 @@ def cache_results(  # noqa: C901 -- the nested helpers inflate the count
             The cached result when fresh, otherwise the live result.
 
         """
-        if not initialized:
-            initialize()
+        if not cache.initialized:
+            cache.initialize()
         now = time.time()
         key = (package_name, package_version)
-        if not bypass_cache and key in cache:  # Check the in-memory cache
-            cache_time, retval = cache[key]
-            if now - cache_time < cache_expire_time:
+        if not bypass_cache and key in cache.results:  # Check the in-memory cache
+            cache_time, retval = cache.results[key]
+            if now - cache_time < cache.expire_time:
                 return retval
         retval = function(
             package_name=package_name,
             package_version=package_version,
             **extra_data,
         )
-        cache[key] = now, retval
-        if filename:
-            save_to_permacache()
+        cache.results[key] = now, retval
+        if cache.filename:
+            cache.save_to_permacache()
         return retval
 
     return wrapped
