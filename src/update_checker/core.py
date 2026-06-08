@@ -320,7 +320,7 @@ async def async_update_check(
         package_version=package_version,
     )
     if result:
-        sys.stderr.write(f"{result}\n")
+        sys.stderr.write(f"{_colorize(str(result))}\n")
 
 
 def _cache_directory() -> pathlib.Path:
@@ -384,6 +384,25 @@ def _check(*, package_name: str, package_version: str) -> UpdateResult | None:
         package_name=package_name,
         package_version=package_version,
     )
+
+
+def _colorize(text: str, /) -> str:
+    """Return text wrapped in ANSI yellow when stderr supports color.
+
+    Color is emitted when stderr is a terminal, honoring the NO_COLOR and
+    FORCE_COLOR conventions (https://no-color.org, https://force-color.org).
+
+    Returns:
+        The text, wrapped in ANSI yellow escape codes when appropriate.
+
+    """
+    if "NO_COLOR" in os.environ:
+        return text
+    if "FORCE_COLOR" not in os.environ and not (
+        hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
+    ):
+        return text
+    return f"\033[33m{text}\033[0m"
 
 
 def _deserialize_result(data: dict[str, str | None] | None, /) -> UpdateResult | None:
@@ -600,4 +619,4 @@ def update_check(
         package_version=package_version,
     )
     if result:
-        sys.stderr.write(f"{result}\n")
+        sys.stderr.write(f"{_colorize(str(result))}\n")

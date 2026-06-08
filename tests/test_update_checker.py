@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -19,7 +20,7 @@ from update_checker import (
     pretty_date,
     update_check,
 )
-from update_checker.core import _deserialize_result, _serialize_result
+from update_checker.core import _colorize, _deserialize_result, _serialize_result
 
 if TYPE_CHECKING:
     from typing import Self
@@ -169,6 +170,22 @@ async def test_async_checker_check__unsuccessful() -> None:
     assert result is None
 
 
+async def test_async_update_check__forced_color(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    response = FakeResponse(json_data={"releases": {"0.0.1": [], "5.0.0": []}})
+    with (
+        mock.patch.dict(os.environ, {"FORCE_COLOR": "1"}, clear=True),
+        fake_async_pypi(response),
+    ):
+        await async_update_check(
+            bypass_cache=True,
+            package_name=PACKAGE,
+            package_version="0.0.1",
+        )
+    assert capsys.readouterr().err.startswith("\033[33m")
+
+
 async def test_async_update_check__successful__has_update(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -254,6 +271,23 @@ def test_checker_check__update_to_rc_version_from_beta_version() -> None:
     assert result.available_version == "4.0.0rc1"
 
 
+def test_colorize__forced_on() -> None:
+    with mock.patch.dict(os.environ, {"FORCE_COLOR": "1"}, clear=True):
+        assert _colorize("hi") == "\033[33mhi\033[0m"
+
+
+def test_colorize__no_color_wins_over_force_color() -> None:
+    env = {"FORCE_COLOR": "1", "NO_COLOR": "1"}
+    with mock.patch.dict(os.environ, env, clear=True):
+        assert _colorize("hi") == "hi"
+
+
+def test_colorize__non_tty_is_plain() -> None:
+    with mock.patch.dict(os.environ, {}, clear=True):
+        # capsys replaces stderr with a non-tty buffer
+        assert _colorize("hi") == "hi"
+
+
 def test_pretty_date__aware_datetime() -> None:
     assert pretty_date(datetime.now(timezone.utc) - timedelta(days=3)) == "3 days ago"
 
@@ -285,6 +319,17 @@ def test_serialize_result__round_trip() -> None:
 
 def test_serialize_result__round_trip_none() -> None:
     assert _deserialize_result(_serialize_result(None)) is None
+
+
+def test_update_check__forced_color(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with (
+        mock.patch.dict(os.environ, {"FORCE_COLOR": "1"}, clear=True),
+        fake_sync_pypi({"releases": {"0.0.1": [], "5.0.0": []}}),
+    ):
+        update_check(PACKAGE, "0.0.1", bypass_cache=True)
+    assert capsys.readouterr().err.startswith("\033[33m")
 
 
 def test_update_check__successful__has_no_update(
