@@ -1,12 +1,27 @@
 """Tests for the update_checker package."""
 
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
+from functools import partial
+from typing import TYPE_CHECKING
 from unittest import mock
 
-import pytest
+import aiohttp
 import requests
 
-from update_checker import UpdateChecker, UpdateResult, pretty_date, update_check
+if TYPE_CHECKING:
+    from typing import Self
+
+    import pytest
+
+from update_checker import (
+    UpdateChecker,
+    UpdateResult,
+    async_update_check,
+    pretty_date,
+    update_check,
+)
 from update_checker.core import _deserialize_result, _serialize_result
 
 PACKAGE = "praw"
@@ -17,6 +32,167 @@ def mock_response(*, latest_version: str = "5.0.0", response: mock.MagicMock) ->
         return_value={"releases": {"0.0.1": [], latest_version: []}},
     )
     response.status_code = 200
+
+
+class FakeResponse:
+    """Async context manager standing in for an aiohttp response."""
+
+    def __init__(self, *, json_data: object = None, status: int = 200) -> None:
+        """Initialize a FakeResponse instance."""
+        self.json_data = json_data
+        self.status = status
+
+    async def __aenter__(self) -> Self:
+        """Return the response.
+
+        Returns:
+            The response itself.
+
+        """
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        """Do nothing."""
+
+    async def json(self) -> object:
+        """Return the canned JSON payload, or raise the canned exception.
+
+        Returns:
+            The canned JSON payload.
+
+        """
+        if isinstance(self.json_data, Exception):
+            raise self.json_data
+        return self.json_data
+
+
+class FakeSession:
+    """Async context manager standing in for an aiohttp client session."""
+
+    def __init__(
+        self,
+        response: FakeResponse | Exception,
+        /,
+        **_kwargs: object,
+    ) -> None:
+        """Initialize a FakeSession instance."""
+        self._response = response
+
+    async def __aenter__(self) -> Self:
+        """Return the session.
+
+        Returns:
+            The session itself.
+
+        """
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        """Do nothing."""
+
+    def get(self, _url: str, /) -> FakeResponse:
+        """Return the canned response, or raise the canned exception.
+
+        Returns:
+            The canned response.
+
+        """
+        if isinstance(self._response, Exception):
+            raise self._response
+        return self._response
+
+
+def fake_pypi(response: FakeResponse | Exception, /) -> mock._patch:
+    return mock.patch("aiohttp.ClientSession", partial(FakeSession, response))
+
+
+async def test_async_checker_check__malformed_json() -> None:
+    with fake_pypi(FakeResponse(json_data=ValueError("not json"))):
+        checker = UpdateChecker(bypass_cache=True)
+        result = await checker.async_check(
+            package_name=PACKAGE,
+            package_version="1.0.0",
+        )
+    assert result is None
+
+
+async def test_async_checker_check__missing_releases() -> None:
+    with fake_pypi(FakeResponse(json_data={})):
+        checker = UpdateChecker(bypass_cache=True)
+        result = await checker.async_check(
+            package_name=PACKAGE,
+            package_version="1.0.0",
+        )
+    assert result is None
+
+
+async def test_async_checker_check__status_error() -> None:
+    with fake_pypi(FakeResponse(status=503)):
+        checker = UpdateChecker(bypass_cache=True)
+        result = await checker.async_check(
+            package_name=PACKAGE,
+            package_version="1.0.0",
+        )
+    assert result is None
+
+
+async def test_async_checker_check__successful() -> None:
+    response = FakeResponse(json_data={"releases": {"0.0.1": [], "5.0.0": []}})
+    with fake_pypi(response):
+        checker = UpdateChecker(bypass_cache=True)
+        result = await checker.async_check(
+            package_name=PACKAGE,
+            package_version="1.0.0",
+        )
+    assert result.available_version == "5.0.0"
+
+
+async def test_async_checker_check__timeout() -> None:
+    with fake_pypi(TimeoutError()):
+        checker = UpdateChecker(bypass_cache=True)
+        result = await checker.async_check(
+            package_name=PACKAGE,
+            package_version="1.0.0",
+        )
+    assert result is None
+
+
+async def test_async_checker_check__unsuccessful() -> None:
+    with fake_pypi(aiohttp.ClientError()):
+        checker = UpdateChecker(bypass_cache=True)
+        result = await checker.async_check(
+            package_name=PACKAGE,
+            package_version="1.0.0",
+        )
+    assert result is None
+
+
+async def test_async_update_check__successful__has_update(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    response = FakeResponse(json_data={"releases": {"0.0.1": [], "5.0.0": []}})
+    with fake_pypi(response):
+        await async_update_check(
+            bypass_cache=True,
+            package_name=PACKAGE,
+            package_version="0.0.1",
+        )
+    assert (
+        capsys.readouterr().err
+        == "Version 0.0.1 of praw is outdated. Version 5.0.0 is available.\n"
+    )
+
+
+async def test_async_update_check__unsuccessful(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with fake_pypi(aiohttp.ClientError()):
+        await async_update_check(
+            bypass_cache=True,
+            package_name=PACKAGE,
+            package_version="0.0.1",
+        )
+    assert not capsys.readouterr().err
 
 
 @mock.patch("requests.get")
