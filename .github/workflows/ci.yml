@@ -6,9 +6,10 @@ jobs:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           python-version: "3.13"
-      - run: uv sync --group lint
+      - run: uv sync --group lint --group typecheck
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - run: uv run pyright
   test:
     runs-on: ubuntu-latest
     steps:

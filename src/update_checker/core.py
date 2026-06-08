@@ -14,10 +14,11 @@ import time
 import urllib.request
 import zlib
 from datetime import datetime, timezone
+from enum import Enum, auto
 from functools import wraps
 from http import HTTPStatus
 from importlib.metadata import version
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 from urllib.parse import quote
 
 try:
@@ -31,7 +32,23 @@ if TYPE_CHECKING:
 
 __version__ = version("update_checker")
 
-CACHE_MISS = object()
+
+class _Sentinel(Enum):
+    """Distinct sentinel type so a cache miss narrows away from a result."""
+
+    CACHE_MISS = auto()
+
+
+class _SerializedResult(TypedDict):
+    """The JSON-serializable form of an UpdateResult in the permacache."""
+
+    available: str
+    package: str
+    release_date: str | None
+    running: str
+
+
+CACHE_MISS = _Sentinel.CACHE_MISS
 CHUNK_SIZE = 65536
 # COMPONENT_RE and REPLACE support parse_version near the bottom of this module
 COMPONENT_RE = re.compile(r"(\d+ | [a-z]+ | \.| -)", re.VERBOSE)
@@ -68,7 +85,7 @@ class _Cache:
             return  # Operate without a permacache
         self.update_from_permacache()
 
-    def retrieve(self, key: tuple[str, str], /) -> UpdateResult | object | None:
+    def retrieve(self, key: tuple[str, str], /) -> UpdateResult | _Sentinel | None:
         """Return the fresh cached result for key, or the CACHE_MISS sentinel.
 
         Returns:
@@ -92,16 +109,19 @@ class _Cache:
         in-tact.
 
         """
+        filename = self.filename
+        if filename is None:
+            return
         self.update_from_permacache()
         data = {
             json.dumps(key): [cache_time, _serialize_result(result)]
             for key, (cache_time, result) in self.results.items()
         }
         try:
-            with self.filename.open("w") as fp:
+            with filename.open("w") as fp:
                 json.dump(data, fp)
             # Keep the cache private; it reveals which packages the user runs
-            self.filename.chmod(0o600)
+            filename.chmod(0o600)
         except OSError:
             pass  # Ignore permacache saving exceptions
 
@@ -115,8 +135,11 @@ class _Cache:
 
     def update_from_permacache(self) -> None:
         """Attempt to update newer items from the permacache."""
+        filename = self.filename
+        if filename is None:
+            return
         try:
-            with self.filename.open() as fp:
+            with filename.open() as fp:
                 permacache = json.load(fp)
         except (OSError, ValueError):
             return  # It's okay if it cannot load
@@ -431,7 +454,7 @@ def _colorize(text: str, /) -> str:
     return f"\033[33m{text}\033[0m"
 
 
-def _deserialize_result(data: dict[str, str | None] | None, /) -> UpdateResult | None:
+def _deserialize_result(data: _SerializedResult | None, /) -> UpdateResult | None:
     if data is None:
         return None
     return UpdateResult(
@@ -644,7 +667,7 @@ def _result_from_data(
     )
 
 
-def _serialize_result(result: UpdateResult | None, /) -> dict[str, str | None] | None:
+def _serialize_result(result: UpdateResult | None, /) -> _SerializedResult | None:
     if result is None:
         return None
     return {

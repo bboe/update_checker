@@ -3,9 +3,10 @@ build-backend = "uv_build"
 requires = ["uv_build>=0.8.0,<1.0"]
 
 [dependency-groups]
-dev = [{include-group = "lint"}, {include-group = "test"}]
+dev = [{include-group = "lint"}, {include-group = "test"}, {include-group = "typecheck"}]
 lint = ["pre-commit", "ruff"]
 test = ["aiohttp", "pytest", "pytest-asyncio"]
+typecheck = ["aiohttp", "pyright"]
 
 [project]
 authors = [{name = "Bryce Boe", email = "bbzbryce@gmail.com"}]
@@ -40,6 +41,10 @@ Changelog = "https://github.com/bboe/update_checker/blob/main/CHANGELOG.md"
 Homepage = "https://github.com/bboe/update_checker"
 Issues = "https://github.com/bboe/update_checker/issues"
 Source = "https://github.com/bboe/update_checker"
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.10"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
