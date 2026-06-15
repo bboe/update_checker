@@ -1,5 +1,9 @@
 repos:
   - hooks:
+      - id: codesorter
+    repo: https://github.com/praw-dev/CodeSorter
+    rev: v0.2.7
+  - hooks:
       - args: [--fix]
         id: ruff-check
       - id: ruff-format
