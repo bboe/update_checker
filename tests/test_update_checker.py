@@ -62,6 +62,18 @@ class FakeContent:
 class FakeResponse:
     """Async context manager standing in for an aiohttp response."""
 
+    async def __aenter__(self) -> Self:
+        """Return the response.
+
+        Returns:
+            The response itself.
+
+        """
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        """Do nothing."""
+
     def __init__(
         self,
         *,
@@ -75,30 +87,9 @@ class FakeResponse:
         self.content = FakeContent(body)
         self.status = status
 
-    async def __aenter__(self) -> Self:
-        """Return the response.
-
-        Returns:
-            The response itself.
-
-        """
-        return self
-
-    async def __aexit__(self, *_exc_info: object) -> None:
-        """Do nothing."""
-
 
 class FakeSession:
     """Async context manager standing in for an aiohttp client session."""
-
-    def __init__(
-        self,
-        response: FakeResponse | Exception,
-        /,
-        **_kwargs: object,
-    ) -> None:
-        """Initialize a FakeSession instance."""
-        self._response = response
 
     async def __aenter__(self) -> Self:
         """Return the session.
@@ -111,6 +102,15 @@ class FakeSession:
 
     async def __aexit__(self, *_exc_info: object) -> None:
         """Do nothing."""
+
+    def __init__(
+        self,
+        response: FakeResponse | Exception,
+        /,
+        **_kwargs: object,
+    ) -> None:
+        """Initialize a FakeSession instance."""
+        self._response = response
 
     def get(self, _url: str, /) -> FakeResponse:
         """Return the canned response, or raise the canned exception.

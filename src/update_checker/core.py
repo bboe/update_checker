@@ -30,29 +30,16 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
     from http.client import HTTPResponse
 
-__version__ = version("update_checker")
-
-
-class _Sentinel(Enum):
-    """Distinct sentinel type so a cache miss narrows away from a result."""
-
-    CACHE_MISS = auto()
-
-
-class _SerializedResult(TypedDict):
-    """The JSON-serializable form of an UpdateResult in the permacache."""
-
-    available: str
-    package: str
-    release_date: str | None
-    running: str
-
-
-CACHE_MISS = _Sentinel.CACHE_MISS
 CHUNK_SIZE = 65536
+
+
 # COMPONENT_RE and REPLACE support parse_version near the bottom of this module
 COMPONENT_RE = re.compile(r"(\d+ | [a-z]+ | \.| -)", re.VERBOSE)
+
+
 DAYS_PER_WEEK = 7
+
+
 # A runaway guard against memory exhaustion. This bounds the decompressed
 # response, so it must stay above the largest real PyPI JSON (a few MiB);
 # gzip shrinks the transfer but not the parsed payload this limit governs.
@@ -61,6 +48,7 @@ REPLACE = {"-": "final-", "dev": "@", "pre": "c", "preview": "c", "rc": "c"}.get
 SECONDS_PER_HOUR = 3600
 SECONDS_PER_MINUTE = 60
 TIMEOUT_SECONDS = 1
+__version__ = version("update_checker")
 USER_AGENT = f"update_checker/{__version__}"
 
 
@@ -156,6 +144,24 @@ class _Cache:
             pass  # It's okay to ignore malformed permacache data
 
 
+class _Sentinel(Enum):
+    """Distinct sentinel type so a cache miss narrows away from a result."""
+
+    CACHE_MISS = auto()
+
+
+CACHE_MISS = _Sentinel.CACHE_MISS
+
+
+class _SerializedResult(TypedDict):
+    """The JSON-serializable form of an UpdateResult in the permacache."""
+
+    available: str
+    package: str
+    release_date: str | None
+    running: str
+
+
 class UpdateChecker:
     """A class to check for package updates."""
 
@@ -246,193 +252,12 @@ class UpdateResult:
         return message
 
 
-def async_cache_results(
-    function: Callable[..., Awaitable[UpdateResult | None]],
-    /,
-) -> Callable[..., Awaitable[UpdateResult | None]]:
-    """Return decorated coroutine function that caches the results.
-
-    Returns:
-        The decorated coroutine function.
-
-    """
-    cache = _Cache()
-
-    @wraps(function)
-    async def wrapped(
-        *,
-        bypass_cache: bool = False,
-        package_name: str,
-        package_version: str,
-        **extra_data: object,
-    ) -> UpdateResult | None:
-        """Return cached results if available.
-
-        Returns:
-            The cached result when fresh, otherwise the live result.
-
-        """
-        key = (package_name, package_version)
-        if not bypass_cache:
-            result = cache.retrieve(key)
-            if result is not CACHE_MISS:
-                return result
-        result = await function(
-            package_name=package_name,
-            package_version=package_version,
-            **extra_data,
-        )
-        cache.store(key=key, value=result)
-        return result
-
-    return wrapped
-
-
-@async_cache_results
-async def _async_check(
-    *,
-    package_name: str,
-    package_version: str,
-) -> UpdateResult | None:
-    data = await async_query_pypi(
-        include_prereleases=not standard_release(package_version),
-        package=package_name,
-    )
-    return _result_from_data(
-        data=data,
-        package_name=package_name,
-        package_version=package_version,
-    )
-
-
-async def async_query_pypi(
-    *,
-    include_prereleases: bool,
-    package: str,
-) -> dict[str, Any]:
-    """Return information about the current version of package.
-
-    Returns:
-        A dict with a "success" key. On success, a "data" key maps to a dict
-        with "version" and "upload_time" keys.
-
-    Raises:
-        ImportError: When aiohttp is not installed.
-
-    """
-    if aiohttp is None:
-        msg = 'aiohttp is required for async support: uv add "update_checker[async]"'
-        raise ImportError(msg)
-    timeout = aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
-    try:
-        async with (
-            aiohttp.ClientSession(
-                headers={"User-Agent": USER_AGENT},
-                timeout=timeout,
-            ) as session,
-            session.get(
-                f"https://pypi.org/pypi/{quote(package, safe='')}/json",
-            ) as response,
-        ):
-            if response.status != HTTPStatus.OK:
-                return {"success": False}
-            # Cap the body so a hostile response cannot exhaust memory; the
-            # total timeout above already bounds how long reading may take
-            raw = await response.content.read(MAX_RESPONSE_BYTES + 1)
-            if len(raw) > MAX_RESPONSE_BYTES:
-                return {"success": False}
-            json_data = json.loads(raw)
-    # TimeoutError and asyncio.TimeoutError are distinct prior to Python 3.11
-    except (TimeoutError, ValueError, aiohttp.ClientError, asyncio.TimeoutError):
-        return {"success": False}
-    try:
-        data = _extract_version(
-            include_prereleases=include_prereleases,
-            releases=json_data["releases"],
-        )
-    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
-        return {"success": False}  # Ignore malformed responses
-
-    return {"success": True, "data": data}
-
-
-async def async_update_check(
-    *,
-    bypass_cache: bool = False,
-    package_name: str,
-    package_version: str,
-) -> None:
-    """Output to stderr if an update to the package is available."""
-    checker = UpdateChecker(bypass_cache=bypass_cache)
-    result = await checker.async_check(
-        package_name=package_name,
-        package_version=package_version,
-    )
-    if result:
-        sys.stderr.write(f"{_colorize(str(result))}\n")
-
-
 def _cache_directory() -> pathlib.Path:
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or "~/AppData/Local"
     else:
         base = os.environ.get("XDG_CACHE_HOME") or "~/.cache"
     return pathlib.Path(base).expanduser() / "update_checker"
-
-
-def cache_results(
-    function: Callable[..., UpdateResult | None],
-    /,
-) -> Callable[..., UpdateResult | None]:
-    """Return decorated function that caches the results.
-
-    Returns:
-        The decorated function.
-
-    """
-    cache = _Cache()
-
-    @wraps(function)
-    def wrapped(
-        *,
-        bypass_cache: bool = False,
-        package_name: str,
-        package_version: str,
-        **extra_data: object,
-    ) -> UpdateResult | None:
-        """Return cached results if available.
-
-        Returns:
-            The cached result when fresh, otherwise the live result.
-
-        """
-        key = (package_name, package_version)
-        if not bypass_cache:
-            result = cache.retrieve(key)
-            if result is not CACHE_MISS:
-                return result
-        result = function(
-            package_name=package_name,
-            package_version=package_version,
-            **extra_data,
-        )
-        cache.store(key=key, value=result)
-        return result
-
-    return wrapped
-
-
-@cache_results
-def _check(*, package_name: str, package_version: str) -> UpdateResult | None:
-    data = query_pypi(
-        include_prereleases=not standard_release(package_version),
-        package=package_name,
-    )
-    return _result_from_data(
-        data=data,
-        package_name=package_name,
-        package_version=package_version,
-    )
 
 
 def _colorize(text: str, /) -> str:
@@ -500,10 +325,254 @@ def _gunzip_capped(data: bytes, /) -> bytes:
     return result
 
 
+def _parse_version_parts(s: str, /) -> Iterator[str]:
+    for raw_part in COMPONENT_RE.split(s):
+        part = REPLACE(raw_part, raw_part)
+        if not part or part == ".":
+            continue
+        if part[:1] in string.digits:
+            yield part.zfill(8)  # pad for numeric comparison
+        else:
+            yield "*" + part
+
+    yield "*final"  # ensure that alpha/beta/candidate are before final
+
+
+def _read_capped(response: HTTPResponse, /) -> bytes:
+    deadline = time.monotonic() + TIMEOUT_SECONDS
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := response.read(CHUNK_SIZE):
+        total += len(chunk)
+        if total > MAX_RESPONSE_BYTES:
+            msg = "response exceeded the maximum allowed size"
+            raise ValueError(msg)
+        if time.monotonic() > deadline:
+            msg = "response exceeded the time budget"
+            raise ValueError(msg)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _result_from_data(
+    *,
+    data: dict[str, Any],
+    package_name: str,
+    package_version: str,
+) -> UpdateResult | None:
+    if not data.get("success") or (
+        parse_version(package_version) >= parse_version(data["data"]["version"])
+    ):
+        return None
+
+    return UpdateResult(
+        available=data["data"]["version"],
+        package=package_name,
+        release_date=data["data"]["upload_time"],
+        running=package_version,
+    )
+
+
+def _serialize_result(result: UpdateResult | None, /) -> _SerializedResult | None:
+    if result is None:
+        return None
+    return {
+        "available": result.available_version,
+        "package": result.package_name,
+        "release_date": (
+            result.release_date.strftime("%Y-%m-%dT%H:%M:%S")
+            if result.release_date
+            else None
+        ),
+        "running": result.running_version,
+    }
+
+
+def async_cache_results(
+    function: Callable[..., Awaitable[UpdateResult | None]],
+    /,
+) -> Callable[..., Awaitable[UpdateResult | None]]:
+    """Return decorated coroutine function that caches the results.
+
+    Returns:
+        The decorated coroutine function.
+
+    """
+    cache = _Cache()
+
+    @wraps(function)
+    async def wrapped(
+        *,
+        bypass_cache: bool = False,
+        package_name: str,
+        package_version: str,
+        **extra_data: object,
+    ) -> UpdateResult | None:
+        """Return cached results if available.
+
+        Returns:
+            The cached result when fresh, otherwise the live result.
+
+        """
+        key = (package_name, package_version)
+        if not bypass_cache:
+            result = cache.retrieve(key)
+            if result is not CACHE_MISS:
+                return result
+        result = await function(
+            package_name=package_name,
+            package_version=package_version,
+            **extra_data,
+        )
+        cache.store(key=key, value=result)
+        return result
+
+    return wrapped
+
+
+@async_cache_results
+async def _async_check(
+    *,
+    package_name: str,
+    package_version: str,
+) -> UpdateResult | None:
+    data = await async_query_pypi(
+        include_prereleases=not standard_release(package_version),
+        package=package_name,
+    )
+    return _result_from_data(
+        data=data,
+        package_name=package_name,
+        package_version=package_version,
+    )
+
+
 # The following two functions are taken from setuptools pkg_resources.py (PSF
 # license), along with the COMPONENT_RE and REPLACE constants near the top of
 # this module. Unfortunately importing pkg_resources to directly use the
 # parse_version function results in some undesired side effects.
+
+
+async def async_query_pypi(
+    *,
+    include_prereleases: bool,
+    package: str,
+) -> dict[str, Any]:
+    """Return information about the current version of package.
+
+    Returns:
+        A dict with a "success" key. On success, a "data" key maps to a dict
+        with "version" and "upload_time" keys.
+
+    Raises:
+        ImportError: When aiohttp is not installed.
+
+    """
+    if aiohttp is None:
+        msg = 'aiohttp is required for async support: uv add "update_checker[async]"'
+        raise ImportError(msg)
+    timeout = aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
+    try:
+        async with (
+            aiohttp.ClientSession(
+                headers={"User-Agent": USER_AGENT},
+                timeout=timeout,
+            ) as session,
+            session.get(
+                f"https://pypi.org/pypi/{quote(package, safe='')}/json",
+            ) as response,
+        ):
+            if response.status != HTTPStatus.OK:
+                return {"success": False}
+            # Cap the body so a hostile response cannot exhaust memory; the
+            # total timeout above already bounds how long reading may take
+            raw = await response.content.read(MAX_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_RESPONSE_BYTES:
+                return {"success": False}
+            json_data = json.loads(raw)
+    # TimeoutError and asyncio.TimeoutError are distinct prior to Python 3.11
+    except (TimeoutError, ValueError, aiohttp.ClientError, asyncio.TimeoutError):
+        return {"success": False}
+    try:
+        data = _extract_version(
+            include_prereleases=include_prereleases,
+            releases=json_data["releases"],
+        )
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return {"success": False}  # Ignore malformed responses
+
+    return {"data": data, "success": True}
+
+
+async def async_update_check(
+    *,
+    bypass_cache: bool = False,
+    package_name: str,
+    package_version: str,
+) -> None:
+    """Output to stderr if an update to the package is available."""
+    checker = UpdateChecker(bypass_cache=bypass_cache)
+    result = await checker.async_check(
+        package_name=package_name,
+        package_version=package_version,
+    )
+    if result:
+        sys.stderr.write(f"{_colorize(str(result))}\n")
+
+
+def cache_results(
+    function: Callable[..., UpdateResult | None],
+    /,
+) -> Callable[..., UpdateResult | None]:
+    """Return decorated function that caches the results.
+
+    Returns:
+        The decorated function.
+
+    """
+    cache = _Cache()
+
+    @wraps(function)
+    def wrapped(
+        *,
+        bypass_cache: bool = False,
+        package_name: str,
+        package_version: str,
+        **extra_data: object,
+    ) -> UpdateResult | None:
+        """Return cached results if available.
+
+        Returns:
+            The cached result when fresh, otherwise the live result.
+
+        """
+        key = (package_name, package_version)
+        if not bypass_cache:
+            result = cache.retrieve(key)
+            if result is not CACHE_MISS:
+                return result
+        result = function(
+            package_name=package_name,
+            package_version=package_version,
+            **extra_data,
+        )
+        cache.store(key=key, value=result)
+        return result
+
+    return wrapped
+
+
+@cache_results
+def _check(*, package_name: str, package_version: str) -> UpdateResult | None:
+    data = query_pypi(
+        include_prereleases=not standard_release(package_version),
+        package=package_name,
+    )
+    return _result_from_data(
+        data=data,
+        package_name=package_name,
+        package_version=package_version,
+    )
 
 
 def parse_version(s: str, /) -> tuple[str, ...]:
@@ -552,19 +621,6 @@ def parse_version(s: str, /) -> tuple[str, ...]:
                 parts.pop()
         parts.append(part)
     return tuple(parts)
-
-
-def _parse_version_parts(s: str, /) -> Iterator[str]:
-    for raw_part in COMPONENT_RE.split(s):
-        part = REPLACE(raw_part, raw_part)
-        if not part or part == ".":
-            continue
-        if part[:1] in string.digits:
-            yield part.zfill(8)  # pad for numeric comparison
-        else:
-            yield "*" + part
-
-    yield "*final"  # ensure that alpha/beta/candidate are before final
 
 
 def pretty_date(the_datetime: datetime, /) -> str:
@@ -629,57 +685,7 @@ def query_pypi(*, include_prereleases: bool, package: str) -> dict[str, Any]:
     except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         return {"success": False}  # Ignore malformed responses
 
-    return {"success": True, "data": data}
-
-
-def _read_capped(response: HTTPResponse, /) -> bytes:
-    deadline = time.monotonic() + TIMEOUT_SECONDS
-    chunks: list[bytes] = []
-    total = 0
-    while chunk := response.read(CHUNK_SIZE):
-        total += len(chunk)
-        if total > MAX_RESPONSE_BYTES:
-            msg = "response exceeded the maximum allowed size"
-            raise ValueError(msg)
-        if time.monotonic() > deadline:
-            msg = "response exceeded the time budget"
-            raise ValueError(msg)
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
-def _result_from_data(
-    *,
-    data: dict[str, Any],
-    package_name: str,
-    package_version: str,
-) -> UpdateResult | None:
-    if not data.get("success") or (
-        parse_version(package_version) >= parse_version(data["data"]["version"])
-    ):
-        return None
-
-    return UpdateResult(
-        available=data["data"]["version"],
-        package=package_name,
-        release_date=data["data"]["upload_time"],
-        running=package_version,
-    )
-
-
-def _serialize_result(result: UpdateResult | None, /) -> _SerializedResult | None:
-    if result is None:
-        return None
-    return {
-        "available": result.available_version,
-        "package": result.package_name,
-        "release_date": (
-            result.release_date.strftime("%Y-%m-%dT%H:%M:%S")
-            if result.release_date
-            else None
-        ),
-        "running": result.running_version,
-    }
+    return {"data": data, "success": True}
 
 
 def standard_release(version: str, /) -> bool:
