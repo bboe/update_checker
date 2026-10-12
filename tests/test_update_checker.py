@@ -6,8 +6,11 @@ import gzip
 import io
 import json
 import os
+import pathlib
+import subprocess
 import sys
 import urllib.error
+import zipfile
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from typing import TYPE_CHECKING
@@ -15,6 +18,7 @@ from unittest import mock
 
 import aiohttp
 
+import update_checker
 from update_checker import (
     UpdateChecker,
     UpdateResult,
@@ -33,7 +37,6 @@ from update_checker.core import (
 )
 
 if TYPE_CHECKING:
-    import pathlib
     from typing import Self
 
     import pytest
@@ -418,6 +421,25 @@ def test_colorize__non_tty_is_plain() -> None:
     with mock.patch.dict(os.environ, {}, clear=True):
         # capsys replaces stderr with a non-tty buffer
         assert _colorize("hi") == "hi"
+
+
+def test_import__without_package_metadata(tmp_path: pathlib.Path) -> None:
+    archive = tmp_path / "vendored.zip"
+    package = pathlib.Path(update_checker.__file__).parent
+    with zipfile.ZipFile(archive, "w") as zipped:
+        for name in ("__init__.py", "core.py"):
+            zipped.write(package / name, f"update_checker/{name}")
+    script = (
+        "import sys; sys.path.insert(0, sys.argv[1]); import update_checker;"
+        " print(update_checker.__version__)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", script, str(archive)],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    assert result.stdout == "unknown\n"
 
 
 def test_pretty_date__aware_datetime() -> None:

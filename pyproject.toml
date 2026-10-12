@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -30,8 +31,8 @@ license = "BSD-2-Clause"
 license-files = ["LICENSE.txt"]
 name = "update_checker"
 readme = "README.md"
-requires-python = ">=3.10"
-version = "1.0.0"
+requires-python = ">=3.9"
+version = "1.0.1"
 
 [project.optional-dependencies]
 async = ["aiohttp"]
@@ -44,7 +45,7 @@ Source = "https://github.com/bboe/update_checker"
 
 [tool.pyright]
 include = ["src"]
-pythonVersion = "3.10"
+pythonVersion = "3.9"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -68,4 +69,6 @@ select = ["ALL"]
     "PLC2701",  # tests may exercise private helpers
     "PLR2004",  # magic values are expected in test assertions
     "S101",  # pytest relies on assert
+    "S404",  # tests run a child interpreter
+    "S603",  # the child's arguments are the test's own
 ]
