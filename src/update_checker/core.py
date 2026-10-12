@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from enum import Enum, auto
 from functools import wraps
 from http import HTTPStatus
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any, TypedDict
 from urllib.parse import quote
 
@@ -48,7 +48,10 @@ REPLACE = {"-": "final-", "dev": "@", "pre": "c", "preview": "c", "rc": "c"}.get
 SECONDS_PER_HOUR = 3600
 SECONDS_PER_MINUTE = 60
 TIMEOUT_SECONDS = 1
-__version__ = version("update_checker")
+try:
+    __version__ = version("update_checker")
+except PackageNotFoundError:  # a zipapp or vendored copy carries no metadata
+    __version__ = "unknown"
 USER_AGENT = f"update_checker/{__version__}"
 
 

@@ -11,3 +11,11 @@ permissions:
 jobs:
   ci:
     uses: bboe/.github/.github/workflows/python-ci.yml@main
+    with:
+      python-versions: '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]'
+  macos-system-python:
+    uses: bboe/.github/.github/workflows/python-ci.yml@main
+    with:
+      lint: false
+      os: '["macos-latest"]'
+      python-versions: '["/usr/bin/python3"]'

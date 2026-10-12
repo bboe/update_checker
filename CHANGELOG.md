@@ -2,6 +2,19 @@
 
 This project adheres to [Semantic Versioning](https://semver.org).
 
+## 1.0.1 - 2026-10-11
+
+### Added
+
+- Python 3.9 support, down to the 3.9.6 that macOS ships as
+  `/usr/bin/python3`. CI tests 3.9 and that interpreter.
+
+### Fixed
+
+- Importing from a zipapp or a vendored copy, which carries no package
+  metadata, no longer raises `PackageNotFoundError`. `__version__` is then
+  `"unknown"`.
+
 ## 1.0.0 - 2026-06-08
 
 First stable release, marking a commitment to the current public API.
